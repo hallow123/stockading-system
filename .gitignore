@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+*.DS_Store
+
+# Logs
+logs/
+*.log
+
+# Data
+data/*.json
+!data/.gitkeep
+prices.json
+trades.json
+stocks.json
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Config
+config.json
+!config.example.json

@@ -1,0 +1,16 @@
+# Python dependencies for stock trading automation system
+
+# HTTP requests
+requests>=2.28.0
+
+# JSON handling (built-in, but listed for clarity)
+# json - built-in
+
+# Date/time handling (built-in)
+# datetime - built-in
+
+# For better JSON pretty printing
+pyyaml>=6.0
+
+# For configuration files
+python-dotenv>=0.21.0
