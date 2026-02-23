@@ -51,6 +51,12 @@ class TradeExecutor:
         # 交易配置
         trading_config = config.get_trading_config()
         self.min_quantity = trading_config.get('min_quantity', 100)
+        
+        # ========== 数据持久化：启动时加载 ==========
+        self.load_positions()  # 加载持仓
+        self.trades = self.load_trades()  # 加载交易记录
+        self.logger.info(f"📦 已加载 {len(self.positions)} 条持仓记录")
+        self.logger.info(f"📦 已加载 {len(self.trades)} 条交易记录")
     
     def exec_cmd(self, command: str, wait: float = 0.3):
         """
@@ -218,7 +224,7 @@ class TradeExecutor:
             
             print(f"✅ 买入成功: {stock_name} {quantity}股 @ ¥{price}", flush=True)
             
-            return {
+            result = {
                 'success': True,
                 'stock_code': stock_code,
                 'stock_name': stock_name,
@@ -227,6 +233,12 @@ class TradeExecutor:
                 'quantity': quantity,
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
+            
+            # ========== 保存交易记录 ==========
+            self.trades.append(result)
+            self.save_trades(self.trades)
+            
+            return result
             
         except Exception as e:
             self.logger.error(f"买入失败: {e}")
@@ -259,7 +271,7 @@ class TradeExecutor:
             # 更新持仓
             self.update_position(stock_code, "SELL", price, quantity)
             
-            return {
+            result = {
                 'success': True,
                 'stock_code': stock_code,
                 'stock_name': stock_name,
@@ -269,6 +281,12 @@ class TradeExecutor:
                 'profit_loss': profit_loss,
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
+            
+            # ========== 保存交易记录 ==========
+            self.trades.append(result)
+            self.save_trades(self.trades)
+            
+            return result
             
         except Exception as e:
             self.logger.error(f"卖出失败: {e}")
@@ -308,7 +326,7 @@ class TradeExecutor:
             # 6. 更新持仓
             self.update_position(stock_code, "SELL", current_price, quantity)
             
-            return {
+            result = {
                 'success': True,
                 'stock_code': stock_code,
                 'stock_name': stock_name,
@@ -318,6 +336,12 @@ class TradeExecutor:
                 'profit_loss': profit_loss,
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             }
+            
+            # ========== 保存交易记录 ==========
+            self.trades.append(result)
+            self.save_trades(self.trades)
+            
+            return result
             
         except Exception as e:
             self.logger.error(f"卖出失败: {e}")
@@ -352,6 +376,9 @@ class TradeExecutor:
                 pos['quantity'] -= quantity
                 if pos['quantity'] <= 0:
                     del self.positions[stock_code]
+        
+        # ========== 自动保存持仓 ==========
+        self.save_positions()
     
     def get_position(self, stock_code: str) -> dict:
         """
@@ -400,6 +427,45 @@ class TradeExecutor:
             self.logger.error(f"加载交易记录失败: {e}")
         
         return []
+    
+    def load_positions(self, file_path: str = None) -> dict:
+        """加载持仓数据"""
+        if file_path is None:
+            base_dir = Path(__file__).parent.parent
+            file_path = base_dir / "data" / "positions.json"
+        
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            if file_path.exists():
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    self.positions = json.load(f)
+                    self.logger.info(f"✅ 持仓数据加载成功: {len(self.positions)} 条")
+            else:
+                self.positions = {}
+                self.logger.info("📝 持仓文件不存在，创建新持仓记录")
+        except Exception as e:
+            self.positions = {}
+            self.logger.error(f"❌ 加载持仓数据失败: {e}")
+        
+        return self.positions
+    
+    def save_positions(self, file_path: str = None):
+        """保存持仓数据"""
+        if file_path is None:
+            base_dir = Path(__file__).parent.parent
+            file_path = base_dir / "data" / "positions.json"
+        
+        try:
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(file_path, 'w', encoding='utf-8') as f:
+                json.dump(self.positions, f, ensure_ascii=False, indent=2)
+            
+            self.logger.info(f"✅ 持仓数据已保存: {len(self.positions)} 条")
+            
+        except Exception as e:
+            self.logger.error(f"❌ 保存持仓数据失败: {e}")
 
 
 # 测试代码
