@@ -1,0 +1,21 @@
+{
+  "trading": {
+    "default_quantity": 1000,
+    "auto_confirm": false,
+    "min_quantity": 100
+  },
+  "strategy": {
+    "buy_drop_threshold": 1.0,
+    "sell_profit_threshold": 10.0,
+    "sell_loss_threshold": 5.0,
+    "max_holding_days": 12
+  },
+  "notification": {
+    "enabled": true,
+    "feishu_webhook": "https://open.feishu.cn/open-apis/bot/v2/hook/你的Webhook地址"
+  },
+  "tonghuashun": {
+    "click_delay": 0.5,
+    "window_title": "同花顺"
+  }
+}
