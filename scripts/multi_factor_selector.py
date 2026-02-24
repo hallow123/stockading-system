@@ -10,13 +10,22 @@ import pandas as pd
 from datetime import datetime
 from typing import Dict, List, Optional
 
-# 尝试导入akshare
+# 尝试导入minishare
+MINISHARE_TOKEN = "FNwqua1lm6sKv4bhr3IWht7sjd59A7d7n6x4Povy5ssofc000yHP2Iql350f104b"
+
+try:
+    import minishare as ms
+    MINISHARE_AVAILABLE = True
+except ImportError:
+    MINISHARE_AVAILABLE = False
+    print("⚠️ minishare未安装")
+
+# 尝试导入akshare (备用)
 try:
     import akshare as ak
     AKSHARE_AVAILABLE = True
 except ImportError:
     AKSHARE_AVAILABLE = False
-    print("⚠️ akshare未安装")
 
 
 class MultiFactorSelector:
@@ -84,27 +93,103 @@ class MultiFactorSelector:
         Returns:
             选中的股票列表，按综合评分排序
         """
-        if not AKSHARE_AVAILABLE:
-            return self._get_mock_result(max_stocks)
-        
         try:
-            # 1. 获取A股实时数据
+            # 1. 获取A股实时数据 (优先使用minishare)
             self.logger("正在获取A股数据...")
-            df = ak.stock_zh_a_spot_em()
             
-            # 2. 获取财务数据
-            self.logger("正在获取财务数据...")
-            financial_df = self._get_financial_data()
+            if MINISHARE_AVAILABLE:
+                # 使用minishare获取全市场数据
+                self.logger("使用minishare获取数据...")
+                df = ms.pro_api(MINISHARE_TOKEN).rt_k_ms(
+                    ts_code='6*.SH,0*.SZ,3*.SZ'
+                )
+                
+                # 转换列名
+                df = df.rename(columns={
+                    'ts_code': '代码',
+                    'name': '名称',
+                    'close': '最新价',
+                    'pct_chg': '涨跌幅',
+                    'turnover_rate': '换手率',
+                    'vol': '成交量',
+                    'amount': '成交额'
+                })
+                
+                # 提取股票代码
+                df['代码'] = df['代码'].str.replace('.SH', '').str.replace('.SZ', '')
+                
+            elif AKSHARE_AVAILABLE:
+                # 备用：使用akshare
+                df = ak.stock_zh_a_spot_em()
+            else:
+                return self._get_mock_result(max_stocks)
             
-            # 3. 获取动量数据
-            self.logger("正在计算动量因子...")
-            df = self._calculate_momentum_factors(df)
+            # 2. 计算综合评分（简化版，minishare数据有限）
+            self.logger("正在计算综合评分...")
+            df = self._calculate_composite_score_simple(df)
+            
+            # 3. 筛选和排序
+            # 排除ST股票
+            if exclude_st:
+                df = df[~df['名称'].str.contains(r'ST|退市|S\*ST|\*ST', na=False, regex=True)]
+            
+            # 排除创业板（3开头）
+            df = df[~df['代码'].str.startswith('3')]
+            
+            # 排除科创板（688开头）
+            df = df[~df['代码'].str.startswith('688')]
+            
+            # 排除北交所（8/4开头）
+            df = df[~df['代码'].str.startswith('8')]
+            df = df[~df['代码'].str.startswith('4')]
+            
+            # 只保留主板（0、6开头）
+            df = df[df['代码'].str.match(r'^[06]')]
+            
+            df = df[df['composite_score'] >= min_score]
+            df = df.sort_values('composite_score', ascending=False)
+            df = df.head(max_stocks)
+            
+            # 4. 转换为列表
+            results = []
+            for _, row in df.iterrows():
+                results.append({
+                    'code': str(row['代码']),
+                    'name': row['名称'],
+                    'composite_score': round(row['composite_score'], 3),
+                    'price': row.get('最新价', 0),
+                    'change_pct': row.get('涨跌幅', 0),
+                    'turnover_rate': row.get('换手率', 0),
+                    'source': 'minishare' if MINISHARE_AVAILABLE else 'akshare'
+                })
+            
+            self.logger(f"多因子选股完成! 选出 {len(results)} 只股票")
+            return results
+            
+        except Exception as e:
+            self.logger(f"多因子选股失败: {e}")
+            import traceback
+            traceback.print_exc()
+            return self._get_mock_result(max_stocks)
             
             # 4. 计算综合评分
             self.logger("正在计算综合评分...")
             df = self._calculate_composite_score(df, financial_df)
             
             # 5. 筛选和排序
+            # 排除ST股票
+            if exclude_st:
+                df = df[~df['名称'].str.contains(r'ST|退市|S\*ST|\*ST', na=False, regex=True)]
+            
+            # 排除创业板（3开头）
+            df = df[~df['代码'].str.startswith('3')]
+            
+            # 排除科创板（688开头）
+            df = df[~df['代码'].str.startswith('688')]
+            
+            # 排除新股（上市不满60天）
+            # 需要额外数据，暂不启用
+            
             df = df[df['composite_score'] >= min_score]
             df = df.sort_values('composite_score', ascending=False)
             df = df.head(max_stocks)
@@ -203,50 +288,138 @@ class MultiFactorSelector:
         df['momentum_60'] = df['涨跌幅'] * 6  # 简化估算
         return df
     
+    def _calculate_composite_score_simple(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        超短线选股评分
+        
+        特点：
+        - 高换手率（流动性好）
+        - 高涨幅（趋势强）
+        - 大成交额（资金活跃）
+        - 中低价股（方便进出）
+        """
+        scores = []
+        
+        for _, row in df.iterrows():
+            score = 0
+            
+            change_pct = row.get('涨跌幅', 0) or 0
+            turnover = row.get('换手率', 0) or 0
+            amount = row.get('成交额', 0) or 0
+            price = row.get('最新价', 0) or 0
+            
+            # A. 换手率（25%）- 越高越好
+            # 超短线需要高换手，10%以上是标配，30%以上更佳
+            if turnover >= 30:
+                turnover_score = 1.0
+            elif turnover >= 10:
+                turnover_score = 0.7 + (turnover - 10) / 20 * 0.3
+            else:
+                turnover_score = turnover / 10 * 0.7
+            score += turnover_score * 25
+            
+            # B. 成交额（20%）- 越高越好
+            # 超短线需要大资金活跃，1亿以上
+            if amount >= 500_000_000:
+                amount_score = 1.0
+            elif amount >= 100_000_000:
+                amount_score = 0.5 + (amount - 100_000_000) / 400_000_000 * 0.5
+            else:
+                amount_score = amount / 100_000_000 * 0.5
+            score += amount_score * 20
+            
+            # C. 价格（15%）- 10元以下最佳
+            # 超短线买低价股方便建仓
+            if price <= 10:
+                price_score = 1.0
+            elif price <= 20:
+                price_score = 1 - (price - 10) / 10 * 0.3
+            elif price <= 50:
+                price_score = 0.7 - (price - 20) / 30 * 0.4
+            else:
+                price_score = 0.3
+            score += price_score * 15
+            
+            # D. 涨跌幅（40%）
+            # 超短线只追涨，涨幅3%~8%最佳
+            if change_pct >= 3 and change_pct <= 8:
+                change_score = 1.0
+            elif change_pct > 8:
+                # 涨幅>8%可能追高，风险大
+                change_score = 0.5
+            elif change_pct > 0:
+                # 涨幅1%~3%，有上涨趋势
+                change_score = change_pct / 3 * 0.6
+            else:
+                # 下跌的不适合超短线，分数为0
+                change_score = 0
+            score += change_score * 40
+            
+            scores.append(score / 100)
+        
+        df['composite_score'] = scores
+        return df
+    
     def _calculate_composite_score(self, 
                                    df: pd.DataFrame, 
                                    financial_df: pd.DataFrame) -> pd.DataFrame:
         """计算综合评分"""
+        # 简化版：只使用实时数据计算评分
+        # 避免依赖可能失败的财务数据接口
         scores = []
         
         for _, row in df.iterrows():
             total_score = 0
             total_weight = 0
             
-            for factor, config in self.factors.items():
-                weight = config['weight']
-                direction = config['direction']
-                
-                # 获取因子值
-                if factor == 'pe' and 'pe' in df.columns:
-                    value = row.get('pe', config['max'])
-                elif factor == 'pb' and 'pb' in df.columns:
-                    value = row.get('pb', config['max'])
-                elif factor == 'roe' and 'roe' in df.columns:
-                    value = row.get('roe', config['min'])
-                elif factor in ['momentum_20', 'momentum_60']:
-                    value = row.get(factor, config['min'])
-                else:
-                    # 默认值
-                    value = (config['min'] + config['max']) / 2
-                
-                # 标准化到 0-1
-                normalized = self._normalize_factor(value, config)
-                
-                # 根据方向调整
-                if direction == -1:  # 越低越好
-                    normalized = 1 - normalized
-                
-                total_score += normalized * weight
-                total_weight += weight
+            # 只使用可靠的实时因子
+            # 1. 涨跌幅（动量）- 权重30%
+            change_pct = row.get('涨跌幅', 0) or 0
+            if change_pct > 0:
+                change_score = min(change_pct / 10, 1)  # 涨幅10%以上满分
+            else:
+                change_score = max(1 + change_pct / 5, 0)  # 跌幅5%以下满分
+            total_score += change_score * 0.30
+            total_weight += 0.30
+            
+            # 2. 换手率 - 权重25%
+            turnover = row.get('换手率', 0) or 0
+            turnover_score = min(turnover / 10, 1)  # 换手率10%以上满分
+            total_score += turnover_score * 0.25
+            total_weight += 0.25
+            
+            # 3. 成交量 - 权重20%
+            volume = row.get('成交量', 0) or 0
+            volume_score = min(volume / 500000, 1)  # 成交量50万手以上满分
+            total_score += volume_score * 0.20
+            total_weight += 0.20
+            
+            # 4. 价格合理性（10-50元）- 权重15%
+            price = row.get('最新价', 0) or 0
+            if 10 <= price <= 50:
+                price_score = 1
+            elif price < 10:
+                price_score = price / 10
+            else:
+                price_score = max(1 - (price - 50) / 50, 0)
+            total_score += price_score * 0.15
+            total_weight += 0.15
+            
+            # 5. 跌幅提供安全边际（当日跌幅>1%）- 权重10%
+            if -10 <= change_pct < -1:
+                drop_score = 1
+            else:
+                drop_score = 0
+            total_score += drop_score * 0.10
+            total_weight += 0.10
             
             # 归一化
             if total_weight > 0:
-                composite = total_score / total_weight
+                final_score = total_score / total_weight
             else:
-                composite = 0.5
+                final_score = 0
             
-            scores.append(composite)
+            scores.append(final_score)
         
         df['composite_score'] = scores
         return df

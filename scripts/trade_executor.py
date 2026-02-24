@@ -9,12 +9,26 @@ import json
 import subprocess
 import time
 import random
+import requests
 from datetime import datetime
 from pathlib import Path
 
 from config import config
 from logger import Logger
 from price_fetcher import PriceFetcher
+
+
+# 飞书Webhook
+FEISHU_WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/4ecc5158-0f6e-479d-b3bb-05d226c5c667'
+
+
+def send_feishu_message(text: str):
+    """发送飞书消息"""
+    try:
+        message = {'msg_type': 'text', 'content': {'text': text}}
+        requests.post(FEISHU_WEBHOOK, json=message, timeout=10)
+    except:
+        pass
 
 
 class TradeExecutor:
@@ -37,7 +51,7 @@ class TradeExecutor:
         
         # 按钮
         'confirm_button': (367, 340),
-        'final_confirm': (906, 628),
+        'final_confirm': (910, 663),
         
         # 刷新按钮（获取最新价）
         'refresh_button': (750, 135)
@@ -79,6 +93,17 @@ class TradeExecutor:
         """
         输入文本
         """
+        self.exec_cmd(f"cliclick t:{text}", wait)
+    
+    def clear_and_type(self, text: str, wait: float = 0.3):
+        """
+        清空输入框后输入文本（先全选删除，再输入新内容）
+        """
+        # 使用 Command+A 全选，然后删除
+        self.exec_cmd("osascript -e 'tell application \"System Events\" to keystroke \"a\" using command down'", 0.2)
+        time.sleep(0.3)
+        self.exec_cmd("osascript -e 'tell application \"System Events\" to key code 51'", 0.2)  # 删除键
+        time.sleep(0.3)
         self.exec_cmd(f"cliclick t:{text}", wait)
     
     def press_enter(self, wait: float = 0.3):
@@ -129,16 +154,18 @@ class TradeExecutor:
         """
         self.logger.info(f"进入交易界面，方向: {direction}")
         
+        print(f"📍 点击交易按钮...", flush=True)
         # 1. 双击交易按钮
         x, y = self.COORDINATES['trading_button']
         self.exec_cmd(f"cliclick c:{x},{y}", 0.5)
         time.sleep(random.uniform(1, 3))
         
-        # 2. 选择买入/卖出方向
         if direction == "buy":
             x, y = self.COORDINATES['buy_direction']
+            print(f"📍 选择买入方向...", flush=True)
         else:
             x, y = self.COORDINATES['sell_direction']
+            print(f"📍 选择卖出方向...", flush=True)
         
         self.click_at(x, y, 0.5)
         time.sleep(random.uniform(1, 3))
@@ -154,15 +181,16 @@ class TradeExecutor:
         x, y = self.COORDINATES['code_input']
         self.click_at(x, y, 0.3)
         time.sleep(random.uniform(0.5, 1.5))
-        self.type_text(stock_code, 0.3)
+        # 清空输入框并输入新代码
+        self.clear_and_type(stock_code, 0.3)
         time.sleep(random.uniform(1, 3))
         
-        # 2. 输入价格
-        x, y = self.COORDINATES['price_input']
-        self.click_at(x, y, 0.3)
-        time.sleep(random.uniform(0.5, 1.5))
-        self.type_text(str(price), 0.3)
-        time.sleep(random.uniform(1, 3))
+        # 2. 价格会自动填充，跳过手动输入
+        # x, y = self.COORDINATES['price_input']
+        # self.click_at(x, y, 0.3)
+        # time.sleep(random.uniform(0.5, 1.5))
+        # self.type_text(str(price), 0.3)
+        # time.sleep(random.uniform(1, 3))
         
         # 3. 输入数量
         x, y = self.COORDINATES['quantity_input']
@@ -174,14 +202,18 @@ class TradeExecutor:
         """
         确认交易
         """
+        print("📍 点击确认按钮...", flush=True)
         # 1. 点击确定按钮
         x, y = self.COORDINATES['confirm_button']
         self.click_at(x, y, 0.5)
-        time.sleep(random.uniform(1, 3))
+        time.sleep(random.uniform(1, 2))
         
-        # 2. 最终确认
+        print("📍 点击最终确认...", flush=True)
+        # 2. 最终确认（双击确保点击成功）
         x, y = self.COORDINATES['final_confirm']
         self.click_at(x, y, 0.5)
+        time.sleep(random.uniform(1, 2))
+        self.click_at(x, y, 0.5)  # 再点一次确保确认
     
     def execute_buy(self, stock_code: str, stock_name: str, price: float, quantity: int, auto_confirm: bool = False) -> dict:
         """
@@ -223,6 +255,10 @@ class TradeExecutor:
             self.update_position(stock_code, "BUY", price, quantity)
             
             print(f"✅ 买入成功: {stock_name} {quantity}股 @ ¥{price}", flush=True)
+            
+            # 发送飞书通知
+            msg = f"📈 买入成功！\n股票: {stock_name}({stock_code})\n数量: {quantity}股\n价格: ¥{price}"
+            send_feishu_message(msg)
             
             result = {
                 'success': True,

@@ -166,6 +166,99 @@ class TrendAnalyzer:
             return 1.0
         return current_volume / avg_volume
     
+    def calculate_ema(self, prices: list, period: int) -> float:
+        """
+        计算指数移动平均线 (EMA)
+        """
+        if len(prices) < period:
+            return None
+        ema = prices[0]
+        k = 2 / (period + 1)
+        for price in prices[1:]:
+            ema = price * k + ema * (1 - k)
+        return ema
+    
+    def calculate_macd(self, prices: list) -> dict:
+        """
+        计算MACD指标
+        返回: {"dif": DIF值, "dea": DEA值, "macd": MACD柱值}
+        """
+        if len(prices) < 26:
+            return {"dif": 0, "dea": 0, "macd": 0}
+        
+        # 计算EMA
+        ema12 = self.calculate_ema(prices, 12)
+        ema26 = self.calculate_ema(prices, 26)
+        
+        if ema12 is None or ema26 is None:
+            return {"dif": 0, "dea": 0, "macd": 0}
+        
+        dif = ema12 - ema26
+        # DEA是DIF的9日EMA，这里简化计算
+        dea = dif * 0.9  # 简化估算
+        macd = (dif - dea) * 2
+        
+        return {"dif": dif, "dea": dea, "macd": macd}
+    
+    def calculate_rsi(self, prices: list, period: int = 14) -> float:
+        """
+        计算RSI相对强弱指标
+        """
+        if len(prices) < period + 1:
+            return 50  # 默认中性
+        
+        gains = []
+        losses = []
+        for i in range(1, len(prices)):
+            change = prices[i] - prices[i-1]
+            if change > 0:
+                gains.append(change)
+                losses.append(0)
+            else:
+                gains.append(0)
+                losses.append(abs(change))
+        
+        if len(gains) < period:
+            return 50
+        
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
+        
+        if avg_loss == 0:
+            return 100
+        
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    def calculate_kdj(self, prices: list, period: int = 9) -> dict:
+        """
+        计算KDJ随机指标
+        返回: {"k": K值, "d": D值, "j": J值}
+        """
+        if len(prices) < period:
+            return {"k": 50, "d": 50, "j": 50}
+        
+        # 找最高最低价
+        recent_prices = prices[-period:]
+        lowest = min(recent_prices)
+        highest = max(recent_prices)
+        
+        if highest == lowest:
+            return {"k": 50, "d": 50, "j": 50}
+        
+        # 计算RSV
+        current_price = prices[-1]
+        rsv = (current_price - lowest) / (highest - lowest) * 100
+        
+        # K = 2/3 * 前一日K + 1/3 * RSV
+        # 简化：使用当前RSV作为K
+        k = rsv
+        d = k * 0.9  # 简化估算
+        j = 3 * k - 2 * d
+        
+        return {"k": k, "d": d, "j": j}
+    
     def get_trend_direction(self, price_info: dict, history_prices: list = None) -> str:
         """
         判断趋势方向
@@ -253,38 +346,78 @@ class TrendAnalyzer:
             'stock_name': price_info.get('name')
         }
     
-    def check_sell_signal(self, price_info: dict, position: dict = None) -> dict:
+    def check_sell_signal(self, price_info: dict, history_prices: list = None, position: dict = None) -> dict:
         """
-        检查卖出信号
+        检查卖出信号（结合多种技术指标）
         返回: {"has_signal": bool, "signals": list, "reason": str}
         """
         signals = []
+        current_price = price_info.get('price', 0)
+        change_pct = price_info.get('change_pct', 0)
         
+        # ========== 止盈止损（基础）==========
         # 条件1: 涨幅达到止盈线
         if position:
             cost = position.get('avg_price', 0)
-            current_price = price_info.get('price', 0)
             
             if cost and current_price:
                 profit_ratio = (current_price - cost) / cost
                 
                 if profit_ratio >= self.take_profit_ratio:
-                    signals.append(f"达到{self.take_profit_ratio*100:.0f}%止盈线")
+                    signals.append(f"💰 达到{int(self.take_profit_ratio*100)}%止盈线")
                 
                 # 条件2: 跌幅达到止损线
                 if profit_ratio <= -self.stop_loss_ratio:
-                    signals.append(f"触发{abs(self.stop_loss_ratio)*100:.0f}%止损线")
+                    signals.append(f"🛡️ 触发{int(self.stop_loss_ratio*100)}%止损线")
         
-        # 条件3: 涨幅达到10%（硬止盈）
-        change_pct = price_info.get('change_pct', 0)
+        # 条件3: 涨幅达到10%（当日涨停）
         if change_pct >= 10.0:
-            signals.append("达到10%止盈线")
+            signals.append("🚀 达到10%涨停")
         
-        # 条件4: 持有超过最大天数
+        # ========== 均线指标 ==========
+        if history_prices and len(history_prices) >= 20:
+            ma5 = self.calculate_ma(history_prices, 5)
+            ma10 = self.calculate_ma(history_prices, 10)
+            ma20 = self.calculate_ma(history_prices, 20)
+            
+            # 条件4: 跌破MA5（短期趋势破位）
+            if ma5 and current_price < ma5:
+                signals.append("📉 跌破MA5")
+            
+            # 条件5: MA5下穿MA10（均线死叉）
+            if ma5 and ma10 and ma5 < ma10:
+                signals.append("💀 MA5下穿MA10（死叉）")
+        
+        # ========== MACD指标 ==========
+        if history_prices and len(history_prices) >= 26:
+            macd = self.calculate_macd(history_prices)
+            # DIF下穿DEA（死叉）
+            if macd['dif'] < macd['dea']:
+                signals.append("📊 MACD死叉")
+        
+        # ========== KDJ指标 ==========
+        if history_prices and len(history_prices) >= 9:
+            kdj = self.calculate_kdj(history_prices)
+            # J值 > 80 超买区域
+            if kdj['j'] > 80:
+                signals.append("🔥 KDJ超买（J>80）")
+            # K值下穿D值（死叉）
+            if kdj['k'] < kdj['d']:
+                signals.append("📉 KDJ死叉")
+        
+        # ========== RSI指标 ==========
+        if history_prices and len(history_prices) >= 15:
+            rsi = self.calculate_rsi(history_prices)
+            # RSI > 70 超买
+            if rsi > 70:
+                signals.append("⚠️ RSI超买（>70）")
+        
+        # ========== 强制平仓 ==========
+        # 条件6: 持有超过最大天数
         if position:
             holding_days = position.get('holding_days', 0)
             if holding_days >= self.max_holding_days:
-                signals.append(f"持有超过{self.max_holding_days}天")
+                signals.append(f"⏰ 持有超过{self.max_holding_days}天")
         
         has_signal = len(signals) > 0
         

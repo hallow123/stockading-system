@@ -8,6 +8,7 @@
 import json
 import sys
 import time
+import requests
 from datetime import datetime
 from pathlib import Path
 
@@ -18,6 +19,17 @@ from config import config
 from logger import Logger
 from price_fetcher import PriceFetcher
 from trend_analyzer import TrendAnalyzer
+
+
+# 飞书Webhook
+FEISHU_WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/4ecc5158-0f6e-479d-b3bb-05d226c5c667'
+
+
+def send_feishu(text):
+    try:
+        requests.post(FEISHU_WEBHOOK, json={'msg_type': 'text', 'content': {'text': text}}, timeout=10)
+    except:
+        pass
 from trade_executor import TradeExecutor
 from risk_controller import RiskController
 from notification import Notification
@@ -46,6 +58,67 @@ class TradingSystem:
     def load_stocks(self) -> list:
         """加载自选股列表"""
         return self.price_fetcher.load_stocks()
+    
+    def load_position_stocks(self) -> list:
+        """加载持仓股票列表"""
+        positions = self.risk_controller.get_positions()
+        stocks = []
+        for code, pos in positions.items():
+            # 获取股票名称
+            name = pos.get('name', '')
+            if not name:
+                # 通过API获取名称
+                try:
+                    import requests
+                    market = '1' if code.startswith('6') else '0'
+                    url = 'https://push2.eastmoney.com/api/qt/stock/get'
+                    params = {'fields': 'f58', 'secid': f'{market}.{code}'}
+                    resp = requests.get(url, params=params, timeout=3)
+                    name = resp.json().get('data', {}).get('f58', code)
+                except:
+                    name = code
+            
+            stocks.append({
+                'code': code,
+                'name': name
+            })
+        return stocks
+    
+    def _save_watch_list(self, stocks: list):
+        """保存观察列表"""
+        import json
+        from pathlib import Path
+        
+        # 读取现有数据
+        stocks_file = Path(__file__).parent.parent / "stocks.json"
+        if stocks_file.exists():
+            with open(stocks_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        else:
+            data = {"watchlist": []}
+        
+        # 获取现有代码
+        existing_codes = {s['code'] for s in data.get('watchlist', [])}
+        
+        # 添加新股票（排除已有的）
+        today = datetime.now().strftime('%Y-%m-%d')
+        for stock in stocks:
+            code = stock.get('code', '')
+            if code and code not in existing_codes:
+                data['watchlist'].append({
+                    'code': code,
+                    'name': stock.get('name', ''),
+                    'industry': stock.get('industry', ''),
+                    'added_date': today,
+                    'status': '观察',
+                    'notes': f"入选原因：{stock.get('reason', '系统选股')}"
+                })
+        
+        # 保存
+        with open(stocks_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        self.logger.info(f"  ✅ 观察列表已更新，共 {len(data['watchlist'])} 只")
     
     def daily_task(self):
         """
@@ -164,6 +237,34 @@ class TradingSystem:
             
             return False
         
+        def get_time_period():
+            """获取当前时间段
+            
+            Returns:
+                str: 盘前/上午/午间/下午/盘后/夜间
+            """
+            now = datetime.now()
+            if not is_trading_day():
+                return "非交易日"
+            
+            current_time = now.time()
+            
+            if current_time < MORNING_START:
+                return "盘前"  # 9:30前
+            elif MORNING_START <= current_time <= MORNING_END:
+                return "上午"  # 9:30-11:30
+            elif MORNING_END < current_time < AFTERNOON_START:
+                return "午间"  # 11:30-13:00
+            elif AFTERNOON_START <= current_time <= AFTERNOON_END:
+                return "下午"  # 13:00-15:00
+            elif current_time > AFTERNOON_END:
+                return "盘后"  # 15:00后
+            else:
+                return "其他"
+                return True
+            
+            return False
+        
         self.logger.info("=" * 50)
         self.logger.info(f"开始实时监控 (间隔 {interval} 分钟)")
         self.logger.info("交易时段: 9:30-11:30, 13:00-15:00")
@@ -174,6 +275,11 @@ class TradingSystem:
         if not stocks:
             self.logger.warning("自选股列表为空")
             return
+        
+        # 记录上次发送提醒的时间
+        import time
+        last_alert_time = time.time()
+        last_summary_time = time.time()  # 上次发送总结的时间
         
         # 持续监控
         try:
@@ -186,6 +292,28 @@ class TradingSystem:
                     
                     # 获取最新价格
                     prices = self.price_fetcher.fetch_all(stocks)
+                    
+                    # 记录所有自选股价格到Excel
+                    self.logger.info("📊 记录股价到Excel...")
+                    from price_logger import PriceLogger
+                    price_logger = PriceLogger()
+                    for stock_code, price_info in prices.items():
+                        if price_info and 'error' not in price_info:
+                            try:
+                                price_logger.log_price(price_info, "定时监控")
+                                self.logger.info(f"  ✅ {price_info.get('name')}: ¥{price_info.get('price')}")
+                            except Exception as e:
+                                self.logger.warning(f"  ❌ 记录失败: {e}")
+                    
+                    # 记录持仓股票价格（额外记录）
+                    position_stocks = self.load_position_stocks()
+                    for pos_stock in position_stocks:
+                        try:
+                            pos_price = self.price_fetcher.fetch_price(pos_stock['code'])
+                            if pos_price:
+                                self.logger.info(f"  📦 持仓: {pos_price.get('name')}: ¥{pos_price.get('price')}")
+                        except Exception as e:
+                            self.logger.warning(f"  ❌ 持仓记录失败: {e}")
                     
                     alerts = []
                     
@@ -201,18 +329,41 @@ class TradingSystem:
                         if position:
                             self.risk_controller.update_position_price(stock_code, current_price)
                             
-                            # 检查卖出信号
-                            sell_signal = self.trend_analyzer.check_sell_signal(price_info, position)
+                            # 获取历史数据用于技术指标计算
+                            history_prices = self.trend_analyzer.get_history_with_current(
+                                stock_code, current_price, days=30
+                            )
+                            price_list = [p['close'] for p in history_prices] if history_prices else []
+                            
+                            # 检查卖出信号（带历史数据）
+                            sell_signal = self.trend_analyzer.check_sell_signal(
+                                price_info, price_list, position
+                            )
                             
                             if sell_signal['has_signal']:
                                 self.logger.warning(f"股票{stock_code}触发卖出信号: {sell_signal['signals']}")
+                                
+                                # 判断卖出数量
+                                total_qty = position.get('quantity', 0)
+                                
+                                # 检查是否是"达到10%止盈"信号
+                                is_takeprofit = any("止盈" in s for s in sell_signal['signals'])
+                                
+                                if is_takeprofit and total_qty > 200:
+                                    # 止盈信号：卖一半，留一半
+                                    sell_qty = total_qty // 2
+                                    self.logger.info(f"💰 止盈信号，卖出数量: {sell_qty} (持仓剩余: {total_qty - sell_qty})")
+                                else:
+                                    # 其他信号（止损/死叉等）：全卖
+                                    sell_qty = total_qty
+                                    self.logger.info(f"🛡️ 止损/破位信号，全量卖出: {sell_qty}")
                                 
                                 # 自动卖出
                                 result = self.trade_executor.execute_sell(
                                     stock_code, 
                                     price_info.get('name', ''),
                                     current_price,
-                                    position.get('quantity', 0)
+                                    sell_qty
                                 )
                                 
                                 # 通知卖出
@@ -261,15 +412,82 @@ class TradingSystem:
                                     'reason': ', '.join(buy_signal['signals'])
                                 })
                     
-                    # 发送告警汇总
-                    if alerts and self.notifier.enable_realtime_alert:
-                        self.notifier.send_alert(alerts)
+                    # 发送告警汇总（买卖信号时立即发送）
+                    if alerts:
+                        self.logger.info(f"📢 发现买卖信号，发送提醒...")
+                        if self.notifier.enable_realtime_alert:
+                            self.notifier.send_alert(alerts)
+                        last_alert_time = time.time()
+                    
+                    # 每小时发送一次总结
+                    current_time = time.time()
+                    if current_time - last_summary_time >= 3600:  # 1小时
+                        self.logger.info("📢 发送定时总结...")
+                        if self.notifier.enable_realtime_alert:
+                            # 发送持仓总结
+                            summary = self._generate_summary(prices)
+                            self.notifier.send_alert(summary)
+                        last_summary_time = current_time
+                    
+                    # ===== 每日18点执行多因子选股 =====
+                    now = datetime.now()
+                    current_hour = now.hour
+                    current_minute = now.minute
+                    
+                    # 检查是否18:00-18:05（执行窗口）
+                    if current_hour == 18 and current_minute < 5:
+                        # 记录今天是否已执行过选股
+                        today_str = now.strftime('%Y-%m-%d')
+                        last_select_date = getattr(self, '_last_select_date', '')
+                        
+                        if last_select_date != today_str:
+                            self.logger.info("⏰ 执行每日多因子选股...")
+                            try:
+                                from multi_factor_selector import MultiFactorSelector
+                                selector = MultiFactorSelector()
+                                
+                                selected = selector.select_by_factors(
+                                    min_score=0.6,
+                                    max_stocks=10,
+                                    exclude_st=True,
+                                    exclude_new=True
+                                )
+                                
+                                self.logger.info(f"  📋 多因子筛选出 {len(selected)} 只股票")
+                                
+                                if selected:
+                                    self._save_watch_list(selected)
+                                    self.logger.info(f"  ✅ 观察列表已更新")
+                                
+                                # 记录今天已执行
+                                self._last_select_date = today_str
+                            except Exception as e:
+                                self.logger.warning(f"  ❌ 选股失败: {e}")
+                        last_summary_time = time.time()
                 else:
-                    # 非交易时段
-                    if is_trading_day():
-                        self.logger.info(f"[{now.strftime('%H:%M:%S')}] 💤 非交易时段，跳过检查")
+                    # 非交易时段 - 根据不同时间段执行不同任务
+                    time_period = get_time_period()
+                    
+                    if time_period == "盘前":
+                        self.logger.info(f"[{now.strftime('%H:%M:%S')}] 🌅 盘前准备阶段")
+                        # 盘前可以：查询股价、检查持仓、更新数据
+                        self._run_pre_market_tasks(prices, stocks)
+                        
+                    elif time_period == "午间":
+                        self.logger.info(f"[{now.strftime('%H:%M:%S')}] ☀️ 午间休息")
+                        # 午间可以：执行选股、生成午间报告
+                        self._run_lunch_tasks(stocks)
+                        
+                    elif time_period == "盘后":
+                        self.logger.info(f"[{now.strftime('%H:%M:%S')}] 🌙 盘后总结")
+                        # 盘后可以：执行选股、生成日报、清理数据
+                        self._run_after_market_tasks(stocks)
+                        
                     else:
-                        self.logger.info(f"[{now.strftime('%H:%M:%S')}] 🎉 节假日，不执行")
+                        if is_trading_day():
+                            self.logger.info(f"[{now.strftime('%H:%M:%S')}] 💤 等待交易时段...")
+                        else:
+                            self.logger.info(f"[{now.strftime('%H:%M:%S')}] 🎉 今日非交易日")
                 
                 # 等待下一次检查
                 self.logger.info(f"等待 {interval} 分钟...")
@@ -363,6 +581,120 @@ class TradingSystem:
             print(f"  盈亏: {profit_ratio:+.2%}")
             print(f"  持仓天数: {pos.get('holding_days', 0)}")
     
+    def _run_pre_market_tasks(self, prices: dict, stocks: list):
+        """盘前任务
+        
+        - 股价更新（获取最新收盘价/开盘价）
+        - 记录到Excel（强制获取）
+        """
+        self.logger.info("📊 执行盘前任务: 更新股价数据")
+        
+        # 盘前时段强制获取价格
+        for stock in stocks:
+            stock_code = stock.get('code')
+            try:
+                price_info = self.price_fetcher.fetch_price(stock_code, force=True)
+                if price_info:
+                    self.logger.info(f"  ✅ {price_info.get('name')}: ¥{price_info.get('price')}")
+            except Exception as e:
+                self.logger.warning(f"  ❌ 获取{stock_code}价格失败: {e}")
+    
+    def _generate_summary(self, prices: dict) -> list:
+        """生成定时总结"""
+        alerts = []
+        positions = self.risk_controller.get_positions()
+        
+        for code, pos in positions.items():
+            price_info = prices.get(code)
+            if not price_info:
+                continue
+            
+            current_price = price_info.get('price', 0)
+            cost = pos.get('avg_price', 0)
+            if current_price > 0 and cost > 0:
+                profit_pct = (current_price - cost) / cost * 100
+                alerts.append({
+                    'code': code,
+                    'name': price_info.get('name', code),
+                    'price': current_price,
+                    'type': '持仓',
+                    'reason': f'成本:{cost:.2f} 盈亏:{profit_pct:+.1f}%'
+                })
+        
+        return alerts
+    
+    def _run_lunch_tasks(self, stocks: list):
+        """午间任务
+        
+        - 午间选股
+        - 持仓检查
+        """
+        self.logger.info("📊 执行午间任务")
+        
+        # 可以在这里添加午间选股逻辑
+        self.logger.info("  💤 午间休息中，可手动执行选股")
+    
+    def _run_after_market_tasks(self, stocks: list):
+        """盘后任务
+        
+        - 执行全市场选股
+        - 生成每日报告
+        - 更新股价记录（强制获取收盘价）
+        """
+        self.logger.info("📊 执行盘后任务: 选股 & 生成报告")
+        
+        # 盘后时段强制获取价格（不跳过）
+        self.logger.info("  📈 获取收盘价...")
+        for stock in stocks:
+            stock_code = stock.get('code')
+            try:
+                # 强制获取价格（force=True 忽略交易时段判断）
+                price_info = self.price_fetcher.fetch_price(stock_code, force=True)
+                if price_info:
+                    self.logger.info(f"  ✅ {price_info.get('name')}: ¥{price_info.get('price')} (收盘)")
+            except Exception as e:
+                self.logger.warning(f"  ❌ 获取{stock_code}价格失败: {e}")
+        
+        self.logger.info("  📝 股价数据已记录到Excel")
+        
+        # 执行全市场选股（多因子选股）
+        self.logger.info("  🔍 执行多因子选股...")
+        try:
+            from multi_factor_selector import MultiFactorSelector
+            selector = MultiFactorSelector()
+            
+            # 多因子综合选股
+            selected = selector.select_by_factors(
+                min_score=0.6,    # 最低评分0.6
+                max_stocks=10,    # 最多10只
+                exclude_st=True,   # 排除ST股
+                exclude_new=True   # 排除次新股
+            )
+            
+            self.logger.info(f"  📋 多因子筛选出 {len(selected)} 只股票")
+            
+            # 保存到观察列表
+            if selected:
+                self._save_watch_list(selected)
+                self.logger.info(f"  ✅ 已保存到观察列表")
+        except Exception as e:
+            self.logger.warning(f"  ❌ 多因子选股失败: {e}")
+            # 备用：简单条件筛选
+            try:
+                from stock_selector import StockSelector
+                selector = StockSelector()
+                selected = selector.select_by_criteria({
+                    'min_turnover': 3.0,
+                    'change_pct_range': (-3, 3),
+                    'min_price': 5,
+                    'max_price': 100
+                })
+                if selected:
+                    self._save_watch_list(selected)
+                    self.logger.info(f"  📋 备用筛选出 {len(selected)} 只股票")
+            except Exception as e2:
+                self.logger.warning(f"  ❌ 备用选股也失败: {e2}")
+    
     def show_status(self):
         """显示系统状态"""
         print("\n" + "=" * 50)
@@ -385,6 +717,9 @@ class TradingSystem:
 
 def main():
     """主函数"""
+    # 系统启动时发送飞书通知
+    send_feishu("📈 股票自动化交易系统已启动！\n⏰ 监控间隔: 15分钟\n💼 自选股: 4只")
+    
     system = TradingSystem()
     
     if len(sys.argv) > 1:
@@ -396,7 +731,7 @@ def main():
         
         elif command == '--realtime-monitor' or command == '-r':
             # 实时监控任务
-            interval = 30  # 默认30分钟
+            interval = 15  # 默认15分钟
             if len(sys.argv) > 2:
                 try:
                     interval = int(sys.argv[2])

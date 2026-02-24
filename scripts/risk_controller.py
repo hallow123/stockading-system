@@ -26,8 +26,8 @@ class RiskController:
         self.stop_loss_ratio = trading_config.get('stop_loss_ratio', 0.05)  # 止损线5%
         self.take_profit_ratio = trading_config.get('take_profit_ratio', 0.10)  # 止盈线10%
         
-        # 持仓
-        self.positions = {}
+        # 持仓 - 加载数据
+        self.positions = self.load_positions()
         
         # 账户余额（模拟）
         self.account_balance = 100000.0  # 初始10万
@@ -156,8 +156,17 @@ class RiskController:
             if stock_code not in self.positions:
                 messages.append("⚠️ 当前无持仓")
                 can_trade = False
+            else:
+                # 5. T+1检查：当日买入不能当日卖出
+                position = self.positions[stock_code]
+                buy_date = position.get('buy_date', '')
+                today = datetime.now().strftime('%Y-%m-%d')
+                
+                if buy_date == today:
+                    messages.append(f"⚠️ T+1规则：{buy_date}买入，今天不能卖出")
+                    can_trade = False
         
-        # 5. 止损止盈检查（针对卖出）
+        # 6. 止损止盈检查（针对卖出）
         if trade_type == "SELL":
             stop_loss_triggered, msg = self.check_stop_loss(stock_code, price)
             if stop_loss_triggered:
@@ -230,8 +239,17 @@ class RiskController:
     
     def load_positions(self, file_path: str = None):
         """从文件加载持仓"""
-        # 实际实现可以从trades.json计算持仓
-        pass
+        if file_path is None:
+            base_dir = Path(__file__).parent.parent
+            file_path = base_dir / "data" / "positions.json"
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                self.positions = json.load(f)
+                return self.positions
+        except Exception as e:
+            self.logger.warning(f"加载持仓失败: {e}")
+            return {}
     
     def save_positions(self, file_path: str = None):
         """保存持仓到文件"""

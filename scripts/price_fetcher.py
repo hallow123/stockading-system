@@ -3,7 +3,7 @@
 """
 价格获取模块
 从多个数据源获取股票价格数据
-优先级：腾讯API > 百度搜索
+优先级：东方财富API > 同花顺 > 腾讯API
 """
 
 import json
@@ -17,6 +17,39 @@ import requests
 from config import config
 from logger import Logger
 from tonghuashun import TonghuashunFetcher
+from price_logger import PriceLogger
+from datetime import time as dt_time
+
+
+# A股交易时段
+TRADING_MORNING_START = dt_time(9, 30)
+TRADING_MORNING_END = dt_time(11, 30)
+TRADING_AFTERNOON_START = dt_time(13, 0)
+TRADING_AFTERNOON_END = dt_time(15, 0)
+
+
+def is_trading_hours() -> bool:
+    """检查当前是否在A股交易时段"""
+    now = datetime.now()
+    current_time = now.time()
+    
+    # 上午时段 9:30-11:30
+    if TRADING_MORNING_START <= current_time <= TRADING_MORNING_END:
+        return True
+    # 下午时段 13:00-15:00
+    if TRADING_AFTERNOON_START <= current_time <= TRADING_AFTERNOON_END:
+        return True
+    
+    return False
+
+
+def is_trading_day() -> bool:
+    """简单判断是否为交易日的辅助函数（周末不交易）"""
+    now = datetime.now()
+    # 周末不交易
+    if now.weekday() >= 5:  # 5=Saturday, 6=Sunday
+        return False
+    return True
 
 
 class PriceFetcher:
@@ -45,6 +78,55 @@ class PriceFetcher:
             return f"sh{stock_code}"
         else:
             return f"sz{stock_code}"
+    
+    def fetch_price_from_minishare(self, stock_code: str) -> dict:
+        """
+        从minishare获取股票价格
+        返回: 包含价格信息的字典
+        """
+        # 获取token
+        token = config.get('data', {}).get('minishare_token', '')
+        if not token:
+            print("未配置minishare_token")
+            return None
+        
+        # 转换股票代码格式
+        if stock_code.startswith('6'):
+            ts_code = f"{stock_code}.SH"
+        elif stock_code.startswith('0') or stock_code.startswith('3'):
+            ts_code = f"{stock_code}.SZ"
+        else:
+            ts_code = f"{stock_code}.SZ"
+        
+        try:
+            import minishare as ms
+            df = ms.pro_api(token).rt_k_ms(ts_code=ts_code)
+            
+            if df is not None and len(df) > 0:
+                row = df.iloc[0]
+                return {
+                    'code': stock_code,
+                    'name': row.get('name', ''),
+                    'price': float(row.get('close', 0)),
+                    'change': float(row.get('change', 0)),
+                    'change_pct': float(row.get('pct_chg', 0)),
+                    'open': float(row.get('open', 0)),
+                    'high': float(row.get('high', 0)),
+                    'low': float(row.get('low', 0)),
+                    'close': float(row.get('close', 0)),
+                    'prev': float(row.get('pre_close', 0)),
+                    'volume': float(row.get('vol', 0)),
+                    'amount': float(row.get('amount', 0)),
+                    'turnover_rate': float(row.get('turnover_rate', 0)),
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+                    'source': 'minishare'
+                }
+        except Exception as e:
+            print(f"minishare错误: {e}")
+        
+        return None
+        
+        return None
     
     def fetch_price_from_tencent(self, stock_code: str) -> dict:
         """
@@ -120,53 +202,61 @@ class PriceFetcher:
         # 雪球需要cookie，这里作为备选
         pass
     
-    def fetch_price(self, stock_code: str) -> dict:
+    def fetch_price(self, stock_code: str, force: bool = False) -> dict:
         """
         获取股票价格（综合多种数据源）
-        优先级：同花顺 > 腾讯API
+        优先级：东方财富API > 同花顺 > 腾讯API
         
         重要说明：
-        - 优先使用同花顺APP进行价格提取
-        - 腾讯API仅作为最后备选（可能会卡顿）
+        - 优先使用东方财富API获取实时价格
+        - 交易执行仍使用同花顺
+        - 每次查询都会记录到Excel文件
+        
+        参数:
+            force: 是否强制查询（非交易时段也查询）
         """
-        # ========== Step 1: 优先使用同花顺 ==========
-        print(f"正在获取 {stock_code} 的价格（优先使用同花顺APP）...")
-        try:
-            ths_price = self.tonghuashun.fetch_price(stock_code)
-            if ths_price and ths_price.price > 0:
-                print(f"✅ 同花顺获取成功: ¥{ths_price.price}")
-                return {
-                    'code': stock_code,
-                    'name': ths_price.name,
-                    'price': ths_price.price,
-                    'change': ths_price.change,
-                    'change_pct': ths_price.change_pct,
-                    'open': ths_price.open,
-                    'high': ths_price.high,
-                    'low': ths_price.low,
-                    'close': ths_price.close,
-                    'volume': ths_price.volume,
-                    'amount': ths_price.amount,
-                    'timestamp': ths_price.timestamp,
-                    'source': '同花顺'
-                }
-            else:
-                print(f"⚠️ 同花顺获取结果无效（价格: {ths_price.price if ths_price else 'None'}）")
-        except Exception as e:
-            print(f"❌ 同花顺查询失败: {e}")
+        # 非交易时段且不强制查询时，直接返回缓存
+        if not force and not is_trading_hours():
+            print(f"⏰ 非交易时段({datetime.now().strftime('%H:%M:%S')})，跳过查询")
+            # 尝试返回缓存价格
+            if stock_code in self.cache:
+                print(f"  📦 使用缓存价格: ¥{self.cache[stock_code].get('price', 0)}")
+                return self.cache[stock_code]
+            return None
         
-        # ========== Step 2: 腾讯API仅作为最后备选 ==========
-        print(f"\n⚠️ 警告：腾讯API仅作为最后备选，可能会卡顿...")
-        print(f"正在通过腾讯API获取 {stock_code} 价格...")
-        price_info = self.fetch_price_from_tencent(stock_code)
+        # 初始化记录器
+        price_logger = PriceLogger()
         
-        if price_info:
-            print(f"✅ 腾讯API获取成功: ¥{price_info['price']}")
-            price_info['source'] = '腾讯API'
+        # ========== minishare API ==========
+        print(f"正在获取 {stock_code} 的价格（minishare）...")
+        price_info = self.fetch_price_from_minishare(stock_code)
+        
+        if price_info and price_info.get('price', 0) > 0:
+            print(f"✅ minishare获取成功: ¥{price_info['price']}")
+            # 保存到缓存
+            self.cache[stock_code] = price_info
+            # 记录到Excel
+            price_logger.log_price(price_info, "实时查询")
             return price_info
-        
-        # ========== Step 3: 所有数据源均失败 ==========
-        print(f"❌ 股票{stock_code}所有数据源均获取失败")
+        else:
+            # minishare失败，记录错误
+            error_msg = f"❌ 股票{stock_code} minishare获取失败"
+            print(error_msg)
+            # 记录到日志
+            import logging
+            logger = logging.getLogger('price_fetcher')
+            logger.warning(error_msg)
+            
+            # 尝试返回缓存
+            if stock_code in self.cache:
+                cached_price = self.cache[stock_code].get('price', 0)
+                print(f"  📦 使用缓存价格: ¥{cached_price}")
+                logger.warning(f"  📦 使用缓存价格: ¥{cached_price}")
+                return self.cache[stock_code]
+            
+            print(f"  ⚠️ 无缓存价格可使用")
+            logger.warning(f"  ⚠️ 无缓存价格可使用")
+            return None
         return None
     
     def fetch_all(self, stocks: list) -> dict:
