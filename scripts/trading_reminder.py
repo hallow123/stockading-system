@@ -36,7 +36,7 @@ def check_and_notify():
             
             # 发送飞书通知
             notifier = Notification()
-            notifier.send_message(f"""
+            notifier.send_feishu_message(f"""
 📅 **明日交易提醒**
 
 明天({tomorrow})是交易日！
@@ -58,7 +58,7 @@ nohup python3 main.py --realtime-monitor 15 > /tmp/trading.log 2>&1 &
         # 备用：发送错误通知
         try:
             notifier = Notification()
-            notifier.send_message(f"❌ 交易日检查失败: {e}")
+            notifier.send_feishu_message(f"❌ 交易日检查失败: {e}")
         except:
             pass
 
