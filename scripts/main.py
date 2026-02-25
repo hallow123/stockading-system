@@ -788,7 +788,7 @@ def main():
     with open(Path(__file__).parent.parent / "stocks.json", 'r', encoding='utf-8') as f:
         watchlist = len(json.load(f).get('watchlist', []))
     
-    print(f"📈 股票自动化交易系统已启动！\n\n⏰ 监控间隔: 1分钟\n💰 总资金: ¥{executor.capital:,.0f}\n📊 持仓市值: ¥{total_value:,.0f}\n💵 可用资金: ¥{available:,.0f}\n📈 仓位: {position_ratio:.1f}%\n📦 持仓: {position_count}只\n👀 关注: {watchlist}只")
+    print(f"📈 股票自动化交易系统已启动！\n\n⏰ 监控间隔: 5分钟\n💰 总资金: ¥{executor.capital:,.0f}\n📦 持仓: {position_count}只\n👀 关注: {watchlist}只")
     
     system = TradingSystem()
     
