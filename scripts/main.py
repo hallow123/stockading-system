@@ -85,9 +85,10 @@ class TradingSystem:
         return stocks
     
     def _save_watch_list(self, stocks: list):
-        """保存观察列表"""
+        """保存观察列表（自动剔除机制）"""
         import json
         from pathlib import Path
+        from datetime import datetime, timedelta
         
         # 读取现有数据
         stocks_file = Path(__file__).parent.parent / "stocks.json"
@@ -97,19 +98,41 @@ class TradingSystem:
         else:
             data = {"watchlist": []}
         
-        # 获取现有代码
+        # ===== 自动剔除：观察超过5天且未买入的股票 =====
+        today = datetime.now()
+        max_observed_days = 5  # 最多观察5天
+        removed_count = 0
+        
+        original_count = len(data.get('watchlist', []))
+        data['watchlist'] = [
+            s for s in data.get('watchlist', [])
+            if s.get('status') == '已买入' or  # 保留已买入的
+            (today - datetime.strptime(s.get('added_date', '2020-01-01'), '%Y-%m-%d')).days <= max_observed_days  # 保留5天内的
+        ]
+        removed_count = original_count - len(data['watchlist'])
+        
+        if removed_count > 0:
+            self.logger.info(f"  🗑️ 自动剔除 {removed_count} 只观察超过{max_observed_days}天的股票")
+        
+        # ===== 添加新股票 =====
         existing_codes = {s['code'] for s in data.get('watchlist', [])}
         
-        # 添加新股票（排除已有的）
-        today = datetime.now().strftime('%Y-%m-%d')
         for stock in stocks:
             code = stock.get('code', '')
+
+            # 限制观察列表最多15只（剔除后如果超限，再剔除最老的）
+            if len(data['watchlist']) >= 15:
+                # 按加入日期排序，移除最老的
+                data['watchlist'].sort(key=lambda x: x.get('added_date', '2020-01-01'))
+                removed = data['watchlist'].pop(0)
+                self.logger.info(f"  🗑️ 观察列表已满，剔除最老股票: {removed.get('name')}")
+            
             if code and code not in existing_codes:
                 data['watchlist'].append({
                     'code': code,
                     'name': stock.get('name', ''),
                     'industry': stock.get('industry', ''),
-                    'added_date': today,
+                    'added_date': today.strftime('%Y-%m-%d'),
                     'status': '观察',
                     'notes': f"入选原因：{stock.get('reason', '系统选股')}"
                 })
@@ -316,9 +339,13 @@ class TradingSystem:
                             self.logger.warning(f"  ❌ 持仓记录失败: {e}")
                     
                     alerts = []
+                    failed_stocks = []  # 获取价格失败的股票
                     
                     for stock_code, price_info in prices.items():
-                        if 'error' in price_info:
+                        if price_info is None or 'error' in price_info:
+                            # 获取价格失败，记录并通知
+                            stock_name = next((s.get('name', '') for s in stocks if s.get('code') == stock_code), stock_code)
+                            failed_stocks.append(f"{stock_name}({stock_code})")
                             continue
                         
                         # 获取持仓
@@ -419,6 +446,18 @@ class TradingSystem:
                             self.notifier.send_alert(alerts)
                         last_alert_time = time.time()
                     
+                    # 发送价格获取失败通知
+                    if failed_stocks:
+                        self.logger.warning(f"⚠️ 以下股票获取价格失败: {', '.join(failed_stocks)}")
+                        if self.notifier.enable_realtime_alert:
+                            self.notifier.send_alert([{
+                                'code': 'SYSTEM',
+                                'name': '系统',
+                                'price': 0,
+                                'type': 'ERROR',
+                                'reason': f"获取价格失败: {', '.join(failed_stocks)}"
+                            }])
+                    
                     # 每小时发送一次总结
                     current_time = time.time()
                     if current_time - last_summary_time >= 3600:  # 1小时
@@ -465,29 +504,8 @@ class TradingSystem:
                                 self.logger.warning(f"  ❌ 选股失败: {e}")
                         last_summary_time = time.time()
                 else:
-                    # 非交易时段 - 根据不同时间段执行不同任务
-                    time_period = get_time_period()
-                    
-                    if time_period == "盘前":
-                        self.logger.info(f"[{now.strftime('%H:%M:%S')}] 🌅 盘前准备阶段")
-                        # 盘前可以：查询股价、检查持仓、更新数据
-                        self._run_pre_market_tasks(prices, stocks)
-                        
-                    elif time_period == "午间":
-                        self.logger.info(f"[{now.strftime('%H:%M:%S')}] ☀️ 午间休息")
-                        # 午间可以：执行选股、生成午间报告
-                        self._run_lunch_tasks(stocks)
-                        
-                    elif time_period == "盘后":
-                        self.logger.info(f"[{now.strftime('%H:%M:%S')}] 🌙 盘后总结")
-                        # 盘后可以：执行选股、生成日报、清理数据
-                        self._run_after_market_tasks(stocks)
-                        
-                    else:
-                        if is_trading_day():
-                            self.logger.info(f"[{now.strftime('%H:%M:%S')}] 💤 等待交易时段...")
-                        else:
-                            self.logger.info(f"[{now.strftime('%H:%M:%S')}] 🎉 今日非交易日")
+                    # 非交易时段 - 静默等待，不执行任何任务
+                    pass
                 
                 # 等待下一次检查
                 self.logger.info(f"等待 {interval} 分钟...")
@@ -581,7 +599,7 @@ class TradingSystem:
             print(f"  盈亏: {profit_ratio:+.2%}")
             print(f"  持仓天数: {pos.get('holding_days', 0)}")
     
-    def _run_pre_market_tasks(self, prices: dict, stocks: list):
+    def _run_pre_market_tasks(self, stocks: list):
         """盘前任务
         
         - 股价更新（获取最新收盘价/开盘价）

@@ -65,7 +65,6 @@ class PriceFetcher:
     
     def __init__(self):
         self.logger = Logger.get_logger("price_fetcher")
-        self.cache = {}  # 价格缓存
         self.tonghuashun = TonghuashunFetcher()
     
     def get_stock_code_with_market(self, stock_code: str) -> str:
@@ -202,26 +201,68 @@ class PriceFetcher:
         # 雪球需要cookie，这里作为备选
         pass
     
+    def fetch_price_from_eastmoney(self, stock_code: str) -> dict:
+        """
+        从东方财富API获取股票价格
+        """
+        # 沪深股票代码转换
+        if stock_code.startswith('6'):
+            market = '1'  # 上海
+        else:
+            market = '0'  # 深圳
+        
+        url = 'https://push2.eastmoney.com/api/qt/stock/get'
+        params = {
+            'ut': 'fa5fd1943c7b386f172d6893dbfba10b',
+            'invt': '2',
+            'fltt': '2',
+            'fields': 'f43,f44,f45,f46,f47,f48,f57,f58,f60,f170,f171',
+            'secid': f'{market}.{stock_code}'
+        }
+        
+        try:
+            response = requests.get(url, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            
+            if data.get('data'):
+                d = data['data']
+                return {
+                    'code': stock_code,
+                    'name': d.get('f58', ''),
+                    'price': d.get('f43', 0) / 1000 if d.get('f43') else 0,  # f43需要除以1000
+                    'change': d.get('f170', 0) / 100 if d.get('f170') else 0,
+                    'change_pct': d.get('f171', 0) / 100 if d.get('f171') else 0,
+                    'open': d.get('f44', 0) / 1000 if d.get('f44') else 0,
+                    'high': d.get('f46', 0) / 1000 if d.get('f46') else 0,
+                    'low': d.get('f45', 0) / 1000 if d.get('f45') else 0,
+                    'close': d.get('f60', 0) / 1000 if d.get('f60') else 0,
+                    'volume': d.get('f47', 0),
+                    'amount': d.get('f48', 0),
+                    'turnover_rate': d.get('f57', 0) / 100 if d.get('f57') else 0,
+                    'pe': d.get('f162', 0) / 1000 if d.get('f162') else 0,
+                    'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                }
+        except Exception as e:
+            self.logger.warning(f"东方财富API获取{stock_code}失败: {e}")
+            return None
+    
     def fetch_price(self, stock_code: str, force: bool = False) -> dict:
         """
         获取股票价格（综合多种数据源）
-        优先级：东方财富API > 同花顺 > 腾讯API
+        优先级：minishare > 东方财富API
         
         重要说明：
-        - 优先使用东方财富API获取实时价格
-        - 交易执行仍使用同花顺
+        - 只返回实时价格，获取失败返回None
+        - 不使用缓存，避免误判
         - 每次查询都会记录到Excel文件
         
         参数:
             force: 是否强制查询（非交易时段也查询）
         """
-        # 非交易时段且不强制查询时，直接返回缓存
+        # 非交易时段且不强制查询时，返回None
         if not force and not is_trading_hours():
             print(f"⏰ 非交易时段({datetime.now().strftime('%H:%M:%S')})，跳过查询")
-            # 尝试返回缓存价格
-            if stock_code in self.cache:
-                print(f"  📦 使用缓存价格: ¥{self.cache[stock_code].get('price', 0)}")
-                return self.cache[stock_code]
             return None
         
         # 初始化记录器
@@ -233,31 +274,22 @@ class PriceFetcher:
         
         if price_info and price_info.get('price', 0) > 0:
             print(f"✅ minishare获取成功: ¥{price_info['price']}")
-            # 保存到缓存
-            self.cache[stock_code] = price_info
             # 记录到Excel
             price_logger.log_price(price_info, "实时查询")
             return price_info
         else:
-            # minishare失败，记录错误
-            error_msg = f"❌ 股票{stock_code} minishare获取失败"
-            print(error_msg)
-            # 记录到日志
-            import logging
-            logger = logging.getLogger('price_fetcher')
-            logger.warning(error_msg)
+            # minishare失败，尝试东方财富API
+            print(f"❌ 股票{stock_code} minishare获取失败，尝试东方财富API...")
             
-            # 尝试返回缓存
-            if stock_code in self.cache:
-                cached_price = self.cache[stock_code].get('price', 0)
-                print(f"  📦 使用缓存价格: ¥{cached_price}")
-                logger.warning(f"  📦 使用缓存价格: ¥{cached_price}")
-                return self.cache[stock_code]
-            
-            print(f"  ⚠️ 无缓存价格可使用")
-            logger.warning(f"  ⚠️ 无缓存价格可使用")
-            return None
-        return None
+            price_info = self.fetch_price_from_eastmoney(stock_code)
+            if price_info and price_info.get('price', 0) > 0:
+                print(f"✅ 东方财富API获取成功: ¥{price_info['price']}")
+                price_logger.log_price(price_info, "实时查询")
+                return price_info
+            else:
+                # 所有数据源都失败，返回None
+                print(f"❌ 股票{stock_code} 所有数据源获取失败")
+                return None
     
     def fetch_all(self, stocks: list) -> dict:
         """
