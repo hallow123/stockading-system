@@ -131,6 +131,56 @@ class Notification:
         
         return self.send_feishu_message(message)
     
+    def send_price_query_result(self, prices: dict, success_count: int, failed_count: int, failed_stocks: list = None) -> bool:
+        """
+        发送股价查询结果通知
+        """
+        message = f"""
+📊 股价查询完成
+
+查询成功: {success_count}只
+查询失败: {failed_count}只
+"""
+        
+        if failed_stocks:
+            message += f"失败股票: {', '.join(failed_stocks)}\n"
+        
+        message += "\n📈 自选股行情:\n"
+        for code, info in prices.items():
+            name = info.get('name', code)
+            price = info.get('price', 0)
+            change = info.get('change_pct', 0)
+            signal = info.get('signal', '观望')
+            message += f"  • {name}({code}): ¥{price:.2f} {change:+.2f}% [{signal}]\n"
+        
+        message += f"\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        return self.send_feishu_message(message)
+    
+    def send_trade_result(self, trade_type: str, stock_name: str, stock_code: str, price: float, quantity: int, success: bool, error: str = None) -> bool:
+        """
+        发送交易结果通知
+        """
+        emoji = "✅" if success else "❌"
+        direction = "买入" if trade_type == "BUY" else "卖出"
+        
+        message = f"""
+{emoji} 交易{'成功' if success else '失败'}
+
+方向: {direction}
+股票: {stock_name}({stock_code})
+价格: ¥{price:.2f}
+数量: {quantity}股
+金额: ¥{price * quantity:,.2f}
+"""
+        
+        if not success and error:
+            message += f"\n错误: {error}"
+        
+        message += f"\n时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        
+        return self.send_feishu_message(message)
+    
     def send_trade_confirmation(self, trade_info: dict) -> bool:
         """
         发送交易确认请求
@@ -152,7 +202,7 @@ class Notification:
         
         return self.send_feishu_message(message)
     
-    def send_trade_result(self, trade_result: dict) -> bool:
+    def send_trade_result_from_dict(self, trade_result: dict) -> bool:
         """
         发送交易结果通知
         """

@@ -18,11 +18,43 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import config
 from logger import Logger
 from price_fetcher import PriceFetcher
+
+# 飞书Webhook地址
+FEISHU_WEBHOOK = 'https://www.feishu.cn/flow/api/trigger-webhook/3c8f0cee02e74bbfd2206ebadb44c27d'
+
+# 拦截print函数，同时发送飞书
+_original_print = print
+def print_with_notify(*args, **kwargs):
+    text = ' '.join(str(arg) for arg in args)
+    _original_print(*args, **kwargs)
+    # 发送到飞书
+    if text and len(text) > 2:
+        try:
+            requests.post(FEISHU_WEBHOOK, json={'msg_type': 'text', 'content': {'text': text}}, timeout=5)
+        except:
+            pass
+
+import builtins
+builtins.print = print_with_notify
+
+# 拦截Logger
+import logging
+_logger_send_feishu = logging.getLogger().info
+def log_to_feishu(msg, *args, **kwargs):
+    _logger_send_feishu(msg, *args, **kwargs)
+    text = str(msg) % args if args else str(msg)
+    if text and len(text) > 2:
+        try:
+            requests.post(FEISHU_WEBHOOK, json={'msg_type': 'text', 'content': {'text': text}}, timeout=5)
+        except:
+            pass
+
+# 不替换Logger，避免崩溃
 from trend_analyzer import TrendAnalyzer
 
 
 # 飞书Webhook
-FEISHU_WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/4ecc5158-0f6e-479d-b3bb-05d226c5c667'
+FEISHU_WEBHOOK = 'https://www.feishu.cn/flow/api/trigger-webhook/3c8f0cee02e74bbfd2206ebadb44c27d'
 
 
 def send_feishu(text):
@@ -157,8 +189,8 @@ class TradingSystem:
         # 1. 加载自选股
         stocks = self.load_stocks()
         if not stocks:
-            self.logger.warning("自选股列表为空")
-            return
+            self.logger.warning("自选股列表为空，跳过本次检查")
+            # 不退出，等待下次检查
         
         self.logger.info(f"加载了 {len(stocks)} 只自选股")
         
@@ -296,8 +328,8 @@ class TradingSystem:
         
         stocks = self.load_stocks()
         if not stocks:
-            self.logger.warning("自选股列表为空")
-            return
+            self.logger.warning("自选股列表为空，跳过本次检查")
+            # 不退出，等待下次检查
         
         # 记录上次发送提醒的时间
         import time
@@ -311,6 +343,13 @@ class TradingSystem:
                 
                 # 检查是否在交易时段
                 if is_trading_hours():
+                    # 检查自选股是否为空
+                    stocks = self.load_stocks()
+                    if not stocks:
+                        self.logger.warning("自选股列表为空，跳过本次检查")
+                        time.sleep(interval * 60)
+                        continue
+                    
                     self.logger.info(f"\n[{now.strftime('%H:%M:%S')}] 🔍 检查信号...")
                     
                     # 获取最新价格
@@ -735,8 +774,8 @@ class TradingSystem:
 
 def main():
     """主函数"""
-    # 系统启动时发送飞书通知
-    send_feishu("📈 股票自动化交易系统已启动！\n⏰ 监控间隔: 15分钟\n💼 自选股: 4只")
+    # 使用print发送启动通知
+    print("📈 已启动！\n⏰股票自动化交易系统 监控间隔: 10分钟\n📦 持仓: 13只\n👀 关注: 0只")
     
     system = TradingSystem()
     
@@ -819,6 +858,26 @@ def main():
             }
             result = system.execute_trade(trade_signal)
             print("\n交易结果:", result)
+        
+        elif command == '--select-stocks':
+            # 执行多因子选股
+            print("\n🔍 执行多因子选股...")
+            from multi_factor_selector import MultiFactorSelector
+            selector = MultiFactorSelector()
+            selected = selector.select_by_factors(
+                min_score=0.6,
+                max_stocks=10,
+                exclude_st=True,
+                exclude_new=True
+            )
+            print(f"\n📋 选出 {len(selected)} 只股票:")
+            for s in selected:
+                score = s.get('composite_score') or s.get('score', 0)
+                print(f"  - {s.get('name')}({s.get('code')}): {s.get('industry', '未知')} - 评分:{score:.2f} - 现价:¥{s.get('price', 0):.2f} - 涨幅:{s.get('change_pct', 0):+.2f}%")
+            
+            # 保存到观察列表
+            system._save_watch_list(selected)
+            print(f"\n✅ 已保存到观察列表")
         
         else:
             print(f"未知命令: {command}")

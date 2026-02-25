@@ -17,7 +17,6 @@ import requests
 from config import config
 from logger import Logger
 from tonghuashun import TonghuashunFetcher
-from price_logger import PriceLogger
 from datetime import time as dt_time
 
 
@@ -29,12 +28,28 @@ TRADING_AFTERNOON_END = dt_time(15, 0)
 
 
 def is_trading_hours() -> bool:
-    """检查当前是否在A股交易时段"""
+    """检查当前是否在A股交易时段（9:30-11:30, 13:00-15:00）"""
     now = datetime.now()
     current_time = now.time()
     
     # 上午时段 9:30-11:30
     if TRADING_MORNING_START <= current_time <= TRADING_MORNING_END:
+        return True
+    # 下午时段 13:00-15:00
+    if TRADING_AFTERNOON_START <= current_time <= TRADING_AFTERNOON_END:
+        return True
+    
+    return False
+
+
+def is_price_monitoring_hours() -> bool:
+    """检查当前是否可以获取价格（9:20开始监控，9:30可交易）"""
+    now = datetime.now()
+    current_time = now.time()
+    PRICE_MONITORING_START = dt_time(9, 20)
+    
+    # 价格监控时段 9:20-11:30
+    if PRICE_MONITORING_START <= current_time <= TRADING_MORNING_END:
         return True
     # 下午时段 13:00-15:00
     if TRADING_AFTERNOON_START <= current_time <= TRADING_AFTERNOON_END:
@@ -261,14 +276,11 @@ class PriceFetcher:
             force: 是否强制查询（非交易时段也查询）
         """
         # 非交易时段且不强制查询时，返回None
-        if not force and not is_trading_hours():
+        if not force and not is_price_monitoring_hours():
             print(f"⏰ 非交易时段({datetime.now().strftime('%H:%M:%S')})，跳过查询")
             return None
         
-        # 初始化记录器
-        price_logger = PriceLogger()
-        
-        # ========== minishare API ==========
+        # ========== minishare API（唯一数据源）==========
         print(f"正在获取 {stock_code} 的价格（minishare）...")
         price_info = self.fetch_price_from_minishare(stock_code)
         
@@ -276,20 +288,10 @@ class PriceFetcher:
             print(f"✅ minishare获取成功: ¥{price_info['price']}")
             # 记录到Excel
             price_logger.log_price(price_info, "实时查询")
-            return price_info
         else:
-            # minishare失败，尝试东方财富API
-            print(f"❌ 股票{stock_code} minishare获取失败，尝试东方财富API...")
-            
-            price_info = self.fetch_price_from_eastmoney(stock_code)
-            if price_info and price_info.get('price', 0) > 0:
-                print(f"✅ 东方财富API获取成功: ¥{price_info['price']}")
-                price_logger.log_price(price_info, "实时查询")
-                return price_info
-            else:
-                # 所有数据源都失败，返回None
-                print(f"❌ 股票{stock_code} 所有数据源获取失败")
-                return None
+            # minishare失败，返回None（不适用其他数据源）
+            print(f"❌ 股票{stock_code} minishare获取失败")
+            return None
     
     def fetch_all(self, stocks: list) -> dict:
         """
@@ -318,8 +320,8 @@ class PriceFetcher:
                     'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 }
             
-            # 避免请求过快
-            time.sleep(0.5)
+            # 避免请求过快，间隔5秒
+            time.sleep(5)
         
         return results
     

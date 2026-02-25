@@ -10,16 +10,47 @@ import subprocess
 import time
 import random
 import requests
+import os
 from datetime import datetime
 from pathlib import Path
 
 from config import config
 from logger import Logger
 from price_fetcher import PriceFetcher
+from notification import Notification
 
 
-# 飞书Webhook
-FEISHU_WEBHOOK = 'https://open.feishu.cn/open-apis/bot/v2/hook/4ecc5158-0f6e-479d-b3bb-05d226c5c667'
+# 飞书Webhook（从配置读取）
+def get_feishu_webhook():
+    """从配置文件获取飞书Webhook"""
+    try:
+        with open(Path(__file__).parent.parent / "config.json", 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            return config.get('notification', {}).get('feishu_webhook', '')
+    except:
+        return ''
+
+
+FEISHU_WEBHOOK = get_feishu_webhook()
+
+# 交易日志文件
+TRADE_LOG_FILE = Path(__file__).parent.parent / "trade_log.txt"
+
+
+def log_to_notes(text: str):
+    """同时打印、记录到日志文件、发送飞书消息"""
+    print(text, flush=True)
+    # 追加到日志文件
+    try:
+        with open(TRADE_LOG_FILE, 'a', encoding='utf-8') as f:
+            f.write(f"{datetime.now().strftime('%H:%M:%S')} {text}\n")
+    except Exception as e:
+        print(f"记录日志失败: {e}", flush=True)
+    # 发送飞书消息
+    try:
+        requests.post(FEISHU_WEBHOOK, json={'msg_type': 'text', 'content': {'text': text}}, timeout=10)
+    except:
+        pass
 
 
 def send_feishu_message(text: str):
@@ -40,18 +71,18 @@ class TradeExecutor:
         'search_box': (698, 37),
         
         # 交易界面
-        'trading_button': (29, 422),
-        'buy_direction': (346, 124),
-        'sell_direction': (402, 125),
+        'trading_button': (29, 424),
+        'buy_direction': (333, 123),
+        'sell_direction': (407, 123),
         
         # 输入框
-        'code_input': (357, 183),
-        'price_input': (341, 233),
-        'quantity_input': (338, 291),
+        'code_input': (365, 186),
+        'price_input': (357, 231),
+        'quantity_input': (360, 293),
         
         # 按钮
-        'confirm_button': (367, 340),
-        'final_confirm': (910, 663),
+        'confirm_button': (369, 343),
+        'final_confirm': (704, 644),
         
         # 刷新按钮（获取最新价）
         'refresh_button': (750, 135)
@@ -61,6 +92,7 @@ class TradeExecutor:
         self.logger = Logger.get_logger("trade_executor")
         self.positions = {}  # 持仓
         self.price_fetcher = PriceFetcher()  # 价格获取器
+        self.notifier = Notification()  # 通知
         
         # 交易配置
         trading_config = config.get_trading_config()
@@ -154,21 +186,27 @@ class TradeExecutor:
         """
         self.logger.info(f"进入交易界面，方向: {direction}")
         
-        print(f"📍 点击交易按钮...", flush=True)
-        # 1. 双击交易按钮
+        # 1. 先将同花顺窗口调到最前面
+        log_to_notes(f"📍 激活同花顺窗口...")
+        os.system('osascript -e \'tell application "同花顺" to activate\' 2>/dev/null')
+        time.sleep(2)
+        
+        log_to_notes(f"📍 点击交易按钮...")
+        # 2. 双击交易按钮
         x, y = self.COORDINATES['trading_button']
+        self.exec_cmd(f"cliclick c:{x},{y}", 0.2)
         self.exec_cmd(f"cliclick c:{x},{y}", 0.5)
-        time.sleep(random.uniform(1, 3))
+        time.sleep(2)
         
         if direction == "buy":
             x, y = self.COORDINATES['buy_direction']
-            print(f"📍 选择买入方向...", flush=True)
+            log_to_notes(f"📍 选择买入方向...")
         else:
             x, y = self.COORDINATES['sell_direction']
-            print(f"📍 选择卖出方向...", flush=True)
+            log_to_notes(f"📍 选择卖出方向...")
         
         self.click_at(x, y, 0.5)
-        time.sleep(random.uniform(1, 3))
+        time.sleep(2)
     
     def input_trade_info(self, stock_code: str, price: float, quantity: int):
         """
@@ -180,10 +218,10 @@ class TradeExecutor:
         # 1. 输入股票代码
         x, y = self.COORDINATES['code_input']
         self.click_at(x, y, 0.3)
-        time.sleep(random.uniform(0.5, 1.5))
+        time.sleep(2)
         # 清空输入框并输入新代码
         self.clear_and_type(stock_code, 0.3)
-        time.sleep(random.uniform(1, 3))
+        time.sleep(2)
         
         # 2. 价格会自动填充，跳过手动输入
         # x, y = self.COORDINATES['price_input']
@@ -195,24 +233,25 @@ class TradeExecutor:
         # 3. 输入数量
         x, y = self.COORDINATES['quantity_input']
         self.click_at(x, y, 0.3)
-        time.sleep(random.uniform(0.5, 1.5))
+        time.sleep(2)  # 点击后等待，模拟人思考
         self.type_text(str(quantity), 0.3)
+        time.sleep(2)  # 输入后等待确认
     
     def confirm_trade(self):
         """
         确认交易
         """
-        print("📍 点击确认按钮...", flush=True)
+        log_to_notes("📍 点击确认按钮...")
         # 1. 点击确定按钮
         x, y = self.COORDINATES['confirm_button']
         self.click_at(x, y, 0.5)
-        time.sleep(random.uniform(1, 2))
+        time.sleep(2)  # 点击后等待，模拟人确认
         
-        print("📍 点击最终确认...", flush=True)
+        log_to_notes("📍 点击最终确认...")
         # 2. 最终确认（双击确保点击成功）
         x, y = self.COORDINATES['final_confirm']
         self.click_at(x, y, 0.5)
-        time.sleep(random.uniform(1, 2))
+        time.sleep(2)  # 点击后等待
         self.click_at(x, y, 0.5)  # 再点一次确保确认
     
     def execute_buy(self, stock_code: str, stock_name: str, price: float, quantity: int, auto_confirm: bool = False) -> dict:
@@ -235,30 +274,33 @@ class TradeExecutor:
                 return {'success': False, 'error': '用户取消'}
         
         self.logger.info(f"执行买入: {stock_name}({stock_code}) - 价格:{price} - 数量:{quantity}")
-        print(f"🟡 开始执行买入: {stock_name}({stock_code})", flush=True)
+        log_to_notes(f"🟡 开始执行买入: {stock_name}({stock_code})")
         
         try:
             # 进入交易界面
-            print("📍 步骤1: 进入交易界面...", flush=True)
+            log_to_notes("📍 步骤1: 进入交易界面...")
             self.enter_trading_interface("buy")
             
             # 输入交易信息
-            print("📍 步骤2: 输入交易信息...", flush=True)
+            log_to_notes("📍 步骤2: 输入交易信息...")
             self.input_trade_info(stock_code, price, quantity)
             
             # 确认交易
-            print("📍 步骤3: 确认交易...", flush=True)
+            log_to_notes("📍 步骤3: 确认交易...")
             self.confirm_trade()
             
             # 记录持仓
-            print("📍 步骤4: 记录持仓...", flush=True)
+            log_to_notes("📍 步骤4: 记录持仓...")
             self.update_position(stock_code, "BUY", price, quantity)
             
-            print(f"✅ 买入成功: {stock_name} {quantity}股 @ ¥{price}", flush=True)
+            log_to_notes(f"✅ 买入成功: {stock_name} {quantity}股 @ ¥{price}")
             
             # 发送飞书通知
             msg = f"📈 买入成功！\n股票: {stock_name}({stock_code})\n数量: {quantity}股\n价格: ¥{price}"
             send_feishu_message(msg)
+            
+            # 发送交易结果通知
+            self.notifier.send_trade_result("BUY", stock_name, stock_code, price, quantity, True)
             
             result = {
                 'success': True,
@@ -321,7 +363,10 @@ class TradeExecutor:
             # ========== 保存交易记录 ==========
             self.trades.append(result)
             self.save_trades(self.trades)
-            
+
+            # 发送交易结果通知
+            self.notifier.send_trade_result("SELL", stock_name, stock_code, price, quantity, True)
+
             return result
             
         except Exception as e:
@@ -337,11 +382,11 @@ class TradeExecutor:
         卖出前先查询实时价格，然后用查询到的价格卖出
         """
         # 1. 先获取实时价格
-        print(f"📍 [{stock_name}] 正在查询实时价格...", flush=True)
+        log_to_notes(f"📍 [{stock_name}] 正在查询实时价格...")
         price_data = self.price_fetcher.fetch_price(stock_code)
         current_price = price_data['price']  # 注意：字段名是 'price' 不是 'current_price'
         
-        print(f"📍 [{stock_name}] 当前价格: ¥{current_price}", flush=True)
+        log_to_notes(f"📍 [{stock_name}] 当前价格: ¥{current_price}")
         self.logger.info(f"执行卖出: {stock_name}({stock_code}) - 自动获取价格: {current_price} - 数量:{quantity}")
         
         try:
