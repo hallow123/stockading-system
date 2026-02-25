@@ -97,12 +97,39 @@ class TradeExecutor:
         # 交易配置
         trading_config = config.get_trading_config()
         self.min_quantity = trading_config.get('min_quantity', 100)
+        self.capital = trading_config.get('capital', 200000)  # 模拟盘资金20万
         
         # ========== 数据持久化：启动时加载 ==========
         self.load_positions()  # 加载持仓
         self.trades = self.load_trades()  # 加载交易记录
         self.logger.info(f"📦 已加载 {len(self.positions)} 条持仓记录")
         self.logger.info(f"📦 已加载 {len(self.trades)} 条交易记录")
+    
+    def get_available_capital(self):
+        """计算可用资金"""
+        used = 0
+        for code, pos in self.positions.items():
+            try:
+                price_data = self.price_fetcher.fetch_price(code)
+                current_price = price_data.get('price', 0)
+                if current_price > 0:
+                    used += current_price * pos.get('quantity', 0)
+            except:
+                pass
+        return self.capital - used
+    
+    def get_position_value(self):
+        """计算持仓总市值"""
+        total = 0
+        for code, pos in self.positions.items():
+            try:
+                price_data = self.price_fetcher.fetch_price(code)
+                current_price = price_data.get('price', 0)
+                if current_price > 0:
+                    total += current_price * pos.get('quantity', 0)
+            except:
+                pass
+        return total
     
     def exec_cmd(self, command: str, wait: float = 0.3):
         """

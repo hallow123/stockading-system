@@ -774,8 +774,21 @@ class TradingSystem:
 
 def main():
     """主函数"""
-    # 使用print发送启动通知
-    print("📈 已启动！\n⏰股票自动化交易系统 监控间隔: 10分钟\n📦 持仓: 13只\n👀 关注: 0只")
+    # 使用print发送启动通知，显示资金和仓位
+    from trade_executor import TradeExecutor
+    executor = TradeExecutor()
+    positions = executor.get_all_positions()
+    position_count = len(positions)
+    total_value = executor.get_position_value()
+    available = executor.get_available_capital()
+    position_ratio = (total_value / executor.capital * 100) if executor.capital > 0 else 0
+    
+    # 加载关注列表
+    import json
+    with open(Path(__file__).parent.parent / "stocks.json", 'r', encoding='utf-8') as f:
+        watchlist = len(json.load(f).get('watchlist', []))
+    
+    print(f"📈 股票自动化交易系统已启动！\n\n⏰ 监控间隔: 1分钟\n💰 总资金: ¥{executor.capital:,.0f}\n📊 持仓市值: ¥{total_value:,.0f}\n💵 可用资金: ¥{available:,.0f}\n📈 仓位: {position_ratio:.1f}%\n📦 持仓: {position_count}只\n👀 关注: {watchlist}只")
     
     system = TradingSystem()
     
