@@ -129,6 +129,15 @@ class RiskController:
         综合判断是否允许交易
         返回: (是否允许, 消息列表)
         """
+        # 立即打印所有关键信息
+        print(f">>> should_trade: {trade_type} {stock_code} @ {price}", flush=True)
+        print(f">>> positions keys: {list(self.positions.keys())}", flush=True)
+        if stock_code in self.positions:
+            pos = self.positions[stock_code]
+            print(f">>> {stock_code} position: {pos}", flush=True)
+            print(f">>> buy_date: {repr(pos.get('buy_date'))}", flush=True)
+            print(f">>> today: {repr(datetime.now().strftime('%Y-%m-%d'))}", flush=True)
+        
         messages = []
         can_trade = True
         
@@ -152,8 +161,10 @@ class RiskController:
                 can_trade = False
         
         # 4. 对于卖出，检查是否持仓
+        print(f"   检查卖出逻辑: trade_type={trade_type}, stock_code={stock_code}", flush=True)
         if trade_type == "SELL":
             if stock_code not in self.positions:
+                print(f"   ❌ {stock_code}不在持仓中", flush=True)
                 messages.append("⚠️ 当前无持仓")
                 can_trade = False
             else:
@@ -161,10 +172,15 @@ class RiskController:
                 position = self.positions[stock_code]
                 buy_date = position.get('buy_date', '')
                 today = datetime.now().strftime('%Y-%m-%d')
+                print(f"   T+1检查: buy_date={repr(buy_date)}, today={repr(today)}, equal={buy_date == today}", flush=True)
                 
                 if buy_date == today:
+                    print(f"   ❌ T+1阻止卖出!", flush=True)
                     messages.append(f"⚠️ T+1规则：{buy_date}买入，今天不能卖出")
                     can_trade = False
+        
+        # 6. 止损止盈检查（针对卖出）
+        print(f"   返回前: can_trade={can_trade}", flush=True)
         
         # 6. 止损止盈检查（针对卖出）
         if trade_type == "SELL":
@@ -219,6 +235,8 @@ class RiskController:
                 'holding_days': 0,
                 'buy_date': datetime.now().strftime('%Y-%m-%d')
             }
+        # 保存到文件
+        self.save_positions()
     
     def remove_position(self, stock_code: str, quantity: int):
         """
@@ -230,6 +248,8 @@ class RiskController:
             
             if pos['quantity'] <= 0:
                 del self.positions[stock_code]
+        # 保存到文件
+        self.save_positions()
     
     def get_positions(self) -> dict:
         """

@@ -357,12 +357,12 @@ class TradingSystem:
                     
                     # 记录所有自选股价格到Excel
                     self.logger.info("📊 记录股价到Excel...")
-                    from price_logger import PriceLogger
-                    price_logger = PriceLogger()
+                    # from price_logger import PriceLogger
+                    # price_logger = PriceLogger()
                     for stock_code, price_info in prices.items():
                         if price_info and 'error' not in price_info:
                             try:
-                                price_logger.log_price(price_info, "定时监控")
+                                # price_logger.log_price(price_info, "定时监控")
                                 self.logger.info(f"  ✅ {price_info.get('name')}: ¥{price_info.get('price')}")
                             except Exception as e:
                                 self.logger.warning(f"  ❌ 记录失败: {e}")
@@ -373,6 +373,8 @@ class TradingSystem:
                         try:
                             pos_price = self.price_fetcher.fetch_price(pos_stock['code'])
                             if pos_price:
+                                # 加入prices字典，用于后续信号检测
+                                prices[pos_stock['code']] = pos_price
                                 self.logger.info(f"  📦 持仓: {pos_price.get('name')}: ¥{pos_price.get('price')}")
                         except Exception as e:
                             self.logger.warning(f"  ❌ 持仓记录失败: {e}")
@@ -434,6 +436,8 @@ class TradingSystem:
                                 
                                 # 通知卖出
                                 if result.get('success'):
+                                    # 更新持仓
+                                    self.risk_controller.remove_position(stock_code, sell_qty)
                                     self.notifier.send_trade_result(result)
                                 
                                 alerts.append({
@@ -468,6 +472,8 @@ class TradingSystem:
                                 
                                 # 通知买入
                                 if result.get('success'):
+                                    # 更新持仓
+                                    self.risk_controller.add_position(stock_code, quantity, current_price)
                                     self.notifier.send_trade_result(result)
                                 
                                 alerts.append({
@@ -543,12 +549,20 @@ class TradingSystem:
                                 self.logger.warning(f"  ❌ 选股失败: {e}")
                         last_summary_time = time.time()
                 else:
-                    # 非交易时段 - 静默等待，不执行任何任务
-                    pass
+                    # 非交易时段 - 静默等待，减少日志输出
+                    if not getattr(self, '_non_trading_warning_shown', False):
+                        self.logger.info("⏰ 当前非交易时段，10分钟后再次检查...")
+                        self._non_trading_warning_shown = True
                 
                 # 等待下一次检查
-                self.logger.info(f"等待 {interval} 分钟...")
-                time.sleep(interval * 60)
+                if not is_trading_hours():
+                    # 非交易时段，减少等待频率（30分钟检查一次）
+                    sleep_interval = 30
+                else:
+                    sleep_interval = interval
+                    
+                self.logger.info(f"等待 {sleep_interval} 分钟...")
+                time.sleep(sleep_interval * 60)
                 
         except KeyboardInterrupt:
             self.logger.info("实时监控已停止")

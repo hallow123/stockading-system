@@ -270,14 +270,13 @@ class PriceFetcher:
         重要说明：
         - 只返回实时价格，获取失败返回None
         - 不使用缓存，避免误判
-        - 每次查询都会记录到Excel文件
         
         参数:
             force: 是否强制查询（非交易时段也查询）
         """
         # 非交易时段且不强制查询时，返回None
         if not force and not is_price_monitoring_hours():
-            print(f"⏰ 非交易时段({datetime.now().strftime('%H:%M:%S')})，跳过查询")
+            # 不打印，避免频繁输出
             return None
         
         # ========== minishare API（唯一数据源）==========
@@ -286,8 +285,7 @@ class PriceFetcher:
         
         if price_info and price_info.get('price', 0) > 0:
             print(f"✅ minishare获取成功: ¥{price_info['price']}")
-            # 记录到Excel
-            price_logger.log_price(price_info, "实时查询")
+            return price_info
         else:
             # minishare失败，返回None（不适用其他数据源）
             print(f"❌ 股票{stock_code} minishare获取失败")

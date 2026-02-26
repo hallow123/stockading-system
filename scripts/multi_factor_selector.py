@@ -20,12 +20,16 @@ except ImportError:
     MINISHARE_AVAILABLE = False
     print("⚠️ minishare未安装")
 
-# 尝试导入akshare (备用)
+# 尝试导入tushare
 try:
-    import akshare as ak
-    AKSHARE_AVAILABLE = True
+    import tushare as ts
+    TUSHARE_AVAILABLE = True
 except ImportError:
-    AKSHARE_AVAILABLE = False
+    TUSHARE_AVAILABLE = False
+    print("⚠️ tushare未安装")
+
+# tushare token（从配置文件读取）
+TUSHARE_TOKEN = ""
 
 
 class MultiFactorSelector:
@@ -98,29 +102,88 @@ class MultiFactorSelector:
             self.logger("正在获取A股数据...")
             
             if MINISHARE_AVAILABLE:
-                # 使用minishare获取全市场数据
+                # 使用minishare批量获取股票数据
                 self.logger("使用minishare获取数据...")
-                df = ms.pro_api(MINISHARE_TOKEN).rt_k_ms(
-                    ts_code='6*.SH,0*.SZ,3*.SZ'
-                )
                 
-                # 转换列名
-                df = df.rename(columns={
-                    'ts_code': '代码',
-                    'name': '名称',
-                    'close': '最新价',
-                    'pct_chg': '涨跌幅',
-                    'turnover_rate': '换手率',
-                    'vol': '成交量',
-                    'amount': '成交额'
-                })
+                # 生成股票代码列表
+                stock_codes = []
+                # 上海: 600000-600200
+                for i in range(600000, 600200):
+                    stock_codes.append(f'{i}.SH')
+                # 深圳: 000001-000150
+                for i in range(1, 150):
+                    stock_codes.append(f'{i:06d}.SZ')
+                # 创业板: 300001-300100
+                for i in range(300001, 300100):
+                    stock_codes.append(f'{i}.SZ')
                 
-                # 提取股票代码
-                df['代码'] = df['代码'].str.replace('.SH', '').str.replace('.SZ', '')
+                # 分批获取
+                all_dfs = []
+                batch_size = 25
+                for i in range(0, len(stock_codes), batch_size):
+                    batch = ','.join(stock_codes[i:i+batch_size])
+                    try:
+                        df_batch = ms.pro_api(MINISHARE_TOKEN).rt_k_ms(ts_code=batch)
+                        if df_batch is not None and len(df_batch) > 0:
+                            all_dfs.append(df_batch)
+                    except Exception as e:
+                        pass
                 
-            elif AKSHARE_AVAILABLE:
-                # 备用：使用akshare
-                df = ak.stock_zh_a_spot_em()
+                if all_dfs:
+                    import pandas as pd
+                    df = pd.concat(all_dfs, ignore_index=True)
+                    self.logger(f"获取到 {len(df)} 只股票")
+                else:
+                    df = pd.DataFrame()
+                
+                if len(df) > 0:
+                    # 转换列名
+                    df = df.rename(columns={
+                        'ts_code': '代码',
+                        'name': '名称',
+                        'close': '最新价',
+                        'pct_chg': '涨跌幅',
+                        'turnover_rate': '换手率',
+                        'vol': '成交量',
+                        'amount': '成交额'
+                    })
+                    
+                    # 提取股票代码
+                    df['代码'] = df['代码'].str.replace('.SH', '').str.replace('.SZ', '')
+                
+            elif TUSHARE_AVAILABLE:
+                # 使用tushare获取股票列表
+                import time
+                time.sleep(1)  # 避免超过频率限制
+                
+                global TUSHARE_TOKEN
+                if not TUSHARE_TOKEN:
+                    # 从配置文件读取token
+                    try:
+                        import sys
+                        sys.path.insert(0, '/Users/wangmaofu/Desktop/股票自动化交易系统/scripts')
+                        from config import config
+                        TUSHARE_TOKEN = config.get('data', {}).get('tushare_token', '')
+                    except:
+                        pass
+                
+                if TUSHARE_TOKEN:
+                    ts.set_token(TUSHARE_TOKEN)
+                    pro = ts.pro_api()
+                    
+                    # 获取全部A股
+                    df = pro.stock_basic(exchange='', list_status='L', 
+                                        fields='ts_code,symbol,name,area,industry,list_date,turnover_rate,pe')
+                    
+                    # 获取实时行情（需要另外的接口，这里简化处理）
+                    # 只返回基本信息
+                    df['代码'] = df['ts_code'].str.replace('.SH', '').str.replace('.SZ', '')
+                    df['名称'] = df['name']
+                    df['最新价'] = 0  # tushare需要另外获取实时行情
+                    df['涨跌幅'] = 0
+                    df['换手率'] = df['turnover_rate'].fillna(0)
+                else:
+                    return self._get_mock_result(max_stocks)
             else:
                 return self._get_mock_result(max_stocks)
             
@@ -156,7 +219,7 @@ class MultiFactorSelector:
                 results.append({
                     'code': str(row['代码']),
                     'name': row['名称'],
-                    'composite_score': round(row['composite_score'], 3),
+                    'score': round(row['composite_score'], 3),  # 用score兼容
                     'price': row.get('最新价', 0),
                     'change_pct': row.get('涨跌幅', 0),
                     'turnover_rate': row.get('换手率', 0),
@@ -298,15 +361,21 @@ class MultiFactorSelector:
         - 大成交额（资金活跃）
         - 中低价股（方便进出）
         """
+        # 确保数据类型正确
+        numeric_cols = ['最新价', '涨跌幅', '换手率', '成交额', '成交量']
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0)
+        
         scores = []
         
         for _, row in df.iterrows():
             score = 0
             
-            change_pct = row.get('涨跌幅', 0) or 0
-            turnover = row.get('换手率', 0) or 0
-            amount = row.get('成交额', 0) or 0
-            price = row.get('最新价', 0) or 0
+            change_pct = float(row.get('涨跌幅', 0) or 0)
+            turnover = float(row.get('换手率', 0) or 0)
+            amount = float(row.get('成交额', 0) or 0)
+            price = float(row.get('最新价', 0) or 0)
             
             # A. 换手率（25%）- 越高越好
             # 超短线需要高换手，10%以上是标配，30%以上更佳

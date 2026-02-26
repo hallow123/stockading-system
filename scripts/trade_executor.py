@@ -82,7 +82,7 @@ class TradeExecutor:
         
         # 按钮
         'confirm_button': (369, 343),
-        'final_confirm': (704, 644),
+        'final_confirm': (703, 684),
         
         # 刷新按钮（获取最新价）
         'refresh_button': (750, 135)
@@ -154,15 +154,15 @@ class TradeExecutor:
         """
         self.exec_cmd(f"cliclick t:{text}", wait)
     
-    def clear_and_type(self, text: str, wait: float = 0.3):
+    def clear_and_type(self, text: str, wait: float = 0.5):
         """
         清空输入框后输入文本（先全选删除，再输入新内容）
         """
         # 使用 Command+A 全选，然后删除
-        self.exec_cmd("osascript -e 'tell application \"System Events\" to keystroke \"a\" using command down'", 0.2)
-        time.sleep(0.3)
+        self.exec_cmd("osascript -e 'tell application \"System Events\" to keystroke \"a\" using command down'", 0.3)
+        time.sleep(0.5)  # 等待全选生效
         self.exec_cmd("osascript -e 'tell application \"System Events\" to key code 51'", 0.2)  # 删除键
-        time.sleep(0.3)
+        time.sleep(0.5)  # 等待删除完成
         self.exec_cmd(f"cliclick t:{text}", wait)
     
     def press_enter(self, wait: float = 0.3):
