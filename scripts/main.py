@@ -401,7 +401,7 @@ class TradingSystem:
                             history_prices = self.trend_analyzer.get_history_with_current(
                                 stock_code, current_price, days=30
                             )
-                            price_list = [p['close'] for p in history_prices] if history_prices else []
+                            price_list = history_prices if history_prices else []
                             
                             # 检查卖出信号（带历史数据）
                             sell_signal = self.trend_analyzer.check_sell_signal(
@@ -426,6 +426,14 @@ class TradingSystem:
                                     sell_qty = total_qty
                                     self.logger.info(f"🛡️ 止损/破位信号，全量卖出: {sell_qty}")
                                 
+                                # 自动卖出前先做安全检查
+                                can_trade, messages = self.risk_controller.should_trade(
+                                    "SELL", stock_code, current_price, sell_qty
+                                )
+                                if not can_trade:
+                                    self.logger.warning(f"交易安全检查未通过: {messages}")
+                                    continue
+                                
                                 # 自动卖出
                                 result = self.trade_executor.execute_sell(
                                     stock_code, 
@@ -438,7 +446,7 @@ class TradingSystem:
                                 if result.get('success'):
                                     # 更新持仓
                                     self.risk_controller.remove_position(stock_code, sell_qty)
-                                    self.notifier.send_trade_result(result)
+                                    self.notifier.send_trade_result_from_dict(result)
                                 
                                 alerts.append({
                                     'code': stock_code,
@@ -460,21 +468,28 @@ class TradingSystem:
                             if buy_signal['has_signal']:
                                 self.logger.info(f"✅ 股票{stock_code}触发买入信号: {buy_signal['signals']}")
                                 
-                                # 自动买入（不等待确认）
+                                # 自动买入前先做安全检查
                                 quantity = 1000  # 默认买1000股，可配置
-                                result = self.trade_executor.execute_buy(
-                                    stock_code,
-                                    price_info.get('name', ''),
-                                    current_price,
-                                    quantity,
-                                    auto_confirm=True  # 自动确认
+                                can_trade, messages = self.risk_controller.should_trade(
+                                    "BUY", stock_code, current_price, quantity
                                 )
-                                
-                                # 通知买入
-                                if result.get('success'):
-                                    # 更新持仓
-                                    self.risk_controller.add_position(stock_code, quantity, current_price)
-                                    self.notifier.send_trade_result(result)
+                                if not can_trade:
+                                    self.logger.warning(f"交易安全检查未通过: {messages}")
+                                else:
+                                    # 执行买入
+                                    result = self.trade_executor.execute_buy(
+                                        stock_code,
+                                        price_info.get('name', ''),
+                                        current_price,
+                                        quantity,
+                                        auto_confirm=True  # 自动确认
+                                    )
+                                    
+                                    # 通知买入
+                                    if result.get('success'):
+                                        # 更新持仓
+                                        self.risk_controller.add_position(stock_code, quantity, current_price)
+                                        self.notifier.send_trade_result_from_dict(result)
                                 
                                 alerts.append({
                                     'code': stock_code,
@@ -624,7 +639,7 @@ class TradingSystem:
             self.logger.log_trade(result)
         
         # 6. 发送交易结果
-        self.notifier.send_trade_result(result)
+        self.notifier.send_trade_result_from_dict(result)
         
         return result
     
